@@ -1,6 +1,7 @@
 import { Loader2, CheckCircle2 } from "lucide-react"
 import { motion } from "motion/react"
 import { Button } from "@/components/ui/button"
+import { useModels } from "@/hooks/use-models"
 import type { OnboardingState } from "../use-onboarding-state"
 
 interface WelcomeStepProps {
@@ -9,6 +10,10 @@ interface WelcomeStepProps {
 
 export function WelcomeStep({ state }: WelcomeStepProps) {
   const rowboatState = state.providerStates['rowboat'] || { isConnected: false, isLoading: false, isConnecting: false }
+  const { defaultModel, groups } = useModels()
+  const sharedCodexReady = defaultModel?.provider === "codex" && groups.some(
+    (group) => group.id === "codex" && group.status === "ok" && group.models.length > 0,
+  )
 
   return (
     <div className="flex flex-col items-center justify-center text-center flex-1">
@@ -55,7 +60,27 @@ export function WelcomeStep({ state }: WelcomeStepProps) {
         transition={{ delay: 0.4 }}
         className="w-full max-w-xs"
       >
-        {rowboatState.isConnected ? (
+        {sharedCodexReady ? (
+          <div className="flex flex-col items-center gap-4">
+            <div className="flex flex-col items-center gap-1 text-green-600 dark:text-green-400">
+              <div className="flex items-center gap-2">
+                <CheckCircle2 className="size-5" />
+                <span className="text-sm font-medium">Connected with Codex OAuth</span>
+              </div>
+              <span className="text-xs text-muted-foreground">No API key required</span>
+            </div>
+            <Button
+              onClick={() => {
+                state.setOnboardingPath('byok')
+                state.setCurrentStep(2)
+              }}
+              size="lg"
+              className="w-full h-12 text-base font-medium"
+            >
+              Continue with Codex OAuth
+            </Button>
+          </div>
+        ) : rowboatState.isConnected ? (
           <div className="flex flex-col items-center gap-4">
             <div className="flex items-center gap-2 text-green-600 dark:text-green-400">
               <CheckCircle2 className="size-5" />
@@ -112,7 +137,7 @@ export function WelcomeStep({ state }: WelcomeStepProps) {
           }}
           className="text-sm text-muted-foreground hover:text-foreground transition-colors underline underline-offset-4 decoration-muted-foreground/30 hover:decoration-foreground/50"
         >
-          I want to bring my own API key
+          {sharedCodexReady ? "Add a different provider (optional)" : "I want to bring my own API key"}
         </button>
       </motion.div>
     </div>

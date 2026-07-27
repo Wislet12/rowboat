@@ -16,17 +16,27 @@ interface LlmSetupStepProps {
 // the one thing chat can't run without.
 export function LlmSetupStep({ state }: LlmSetupStepProps) {
   const { handleNext, handleBack } = state
-  const { defaultModel, isRowboatConnected } = useModels()
+  const { defaultModel, groups, isRowboatConnected } = useModels()
+  const isCodexConnected = groups.some(
+    (group) => group.id === "codex" && group.status === "ok" && group.models.length > 0,
+  )
+  const hasReadyProvider = isRowboatConnected || isCodexConnected
   const hasAssistant = defaultModel !== null
 
   return (
     <div className="flex flex-col flex-1">
       {/* Title */}
       <h2 className="text-3xl font-bold tracking-tight text-center mb-2">
-        {isRowboatConnected ? "Add more providers" : "Connect a model provider"}
+        {isCodexConnected
+          ? "Codex OAuth is ready"
+          : isRowboatConnected
+            ? "Add more providers"
+            : "Connect a model provider"}
       </h2>
       <p className="text-base text-muted-foreground text-center mb-6">
-        {isRowboatConnected
+        {isCodexConnected
+          ? "Your existing JARVIS/Codex sign-in powers Rowboat without an API key. API-key and local-model providers are optional."
+          : isRowboatConnected
           ? "Rowboat is ready to use. Optionally connect your own API keys or local models — their models appear alongside your Rowboat models."
           : "Connect an API key or a local model to power the Assistant."}
       </p>
@@ -39,7 +49,7 @@ export function LlmSetupStep({ state }: LlmSetupStepProps) {
           <ArrowLeft className="size-4" />
           Back
         </Button>
-        <Button onClick={handleNext} disabled={!hasAssistant} className="min-w-[140px]">
+        <Button onClick={handleNext} disabled={!hasAssistant || !hasReadyProvider} className="min-w-[140px]">
           Continue
         </Button>
       </div>

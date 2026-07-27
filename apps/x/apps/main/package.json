@@ -8,7 +8,7 @@
     "license": "Apache-2.0",
     "scripts": {
         "start": "electron .",
-        "build": "rm -rf dist && tsc && node bundle.mjs",
+        "build": "node ../../scripts/fs-task.mjs clean dist && tsc && node bundle.mjs",
         "package": "electron-forge package",
         "make": "electron-forge make"
     },

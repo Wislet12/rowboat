@@ -1,6 +1,7 @@
 import { app, BrowserWindow, desktopCapturer, dialog, protocol, net, shell, session, safeStorage, type Session } from "electron";
 import path from "node:path";
 import os from "node:os";
+import fs from "node:fs/promises";
 import {
   setupIpcHandlers,
   startRunsWatcher, startSessionsWatcher, startTurnEventsWatcher, markSessionsIndexReady,
@@ -40,7 +41,8 @@ import { startSkillsWatcher, stopSkillsWatcher } from "@x/core/dist/runtime/asse
 import { init as initAppsServer, shutdown as shutdownAppsServer } from "@x/core/dist/apps/server.js";
 import { registerAppsHostApi } from "@x/core/dist/apps/host-api.js";
 import { setTokenCipher as setGithubTokenCipher } from "@x/core/dist/apps/github-auth.js";
-import { setTokenCipher as setChatGPTTokenCipher } from "@x/core/dist/auth/chatgpt-auth.js";
+import { getChatGPTStatus, setTokenCipher as setChatGPTTokenCipher } from "@x/core/dist/auth/chatgpt-auth.js";
+import { applyCodexInitialSelection } from "@x/core/dist/models/chatgpt-selection.js";
 import { shutdown as shutdownAnalytics } from "@x/core/dist/analytics/posthog.js";
 import { identifyIfSignedIn } from "@x/core/dist/analytics/identify.js";
 import { syncModelProviderPersonProperties } from "@x/core/dist/analytics/model-providers.js";
@@ -74,6 +76,7 @@ import { init as initMeetingDetection } from "@x/core/dist/meetings/detector.js"
 import { createAppTray, hasTray, isRecordingActive, markPendingToggleMeetingNotes } from "./tray.js";
 import { initMeetingPopup, showMeetingPopup } from "./meeting-popup.js";
 import { initQuickAsk } from "./quick-ask.js";
+import { startJarvisBridge, type JarvisBridgeHandle } from "./jarvis-bridge.js";
 
 // Captured as early as possible so it reflects actual process start. Used to
 // gate grace-eligible notifications (e.g. the burst of background-task
@@ -138,6 +141,15 @@ app.on("open-url", (event, url) => {
 
 // Subsequent launches on Windows/Linux land here via the single-instance lock.
 app.on("second-instance", (_event, argv) => {
+  const jarvisAttach = argv.find((arg) => arg.startsWith("--rowboat-jarvis-attach="));
+  if (jarvisAttach) {
+    const attachFile = jarvisAttach.slice("--rowboat-jarvis-attach=".length).trim();
+    if (attachFile) {
+      void attachJarvisBridgeFromFile(attachFile).catch((error) => {
+        console.error("[JARVIS Bridge] Existing-instance attachment failed:", error);
+      });
+    }
+  }
   const url = extractDeepLinkFromArgv(argv);
   if (url) dispatchUrl(url);
 });
@@ -339,11 +351,97 @@ function setupZoomShortcuts(win: BrowserWindow) {
 // running from the tray. showApp() is the single "bring the app up" path
 // used by the tray, the Dock, and pending tray commands.
 let mainWindow: BrowserWindow | null = null;
+let jarvisBridge: JarvisBridgeHandle | null = null;
+let jarvisSessions: ISessions | null = null;
+let pendingJarvisAttachFile = "";
+let jarvisDocked = false;
+const jarvisManagedEmbeddedLaunch = process.env.ROWBOAT_JARVIS_EMBEDDED === "true";
+
+function nativeWindowHandle(): string {
+  const win = mainWindow;
+  if (!win || win.isDestroyed()) return "";
+  try {
+    const handle = win.getNativeWindowHandle();
+    if (handle.byteLength >= 8) return handle.readBigUInt64LE(0).toString(10);
+    if (handle.byteLength >= 4) return String(handle.readUInt32LE(0));
+  } catch {
+    // A destroyed or unsupported native window simply cannot be docked.
+  }
+  return "";
+}
+
+function jarvisWindowSnapshot() {
+  const win = mainWindow;
+  return {
+    nativeHandle: nativeWindowHandle(),
+    visible: Boolean(win && !win.isDestroyed() && win.isVisible()),
+    docked: jarvisDocked,
+  };
+}
+
+function setJarvisDocked(docked: boolean, visible: boolean): void {
+  jarvisDocked = docked;
+  const win = mainWindow;
+  if (!win || win.isDestroyed()) return;
+  win.setSkipTaskbar(docked);
+  if (!visible) {
+    win.hide();
+    return;
+  }
+  if (docked) {
+    win.show();
+  } else {
+    showApp();
+  }
+}
+
+function focusForJarvis(): void {
+  const win = mainWindow;
+  if (jarvisDocked && win && !win.isDestroyed()) {
+    win.show();
+    win.focus();
+    return;
+  }
+  showApp();
+}
+
+function jarvisBridgeOptions(overrides: { token?: string; discoveryFile?: string } = {}) {
+  if (!jarvisSessions) throw new Error("Rowboat sessions are not initialized yet.");
+  return {
+    sessions: jarvisSessions,
+    focus: focusForJarvis,
+    windowSnapshot: jarvisWindowSnapshot,
+    setDocked: setJarvisDocked,
+    ...overrides,
+  };
+}
+
+async function attachJarvisBridgeFromFile(filePath: string): Promise<void> {
+  const resolved = path.resolve(filePath);
+  if (!jarvisSessions) {
+    pendingJarvisAttachFile = resolved;
+    return;
+  }
+  const raw = await fs.readFile(resolved, "utf8");
+  const request = JSON.parse(raw) as {
+    protocol?: string;
+    token?: string;
+    discoveryFile?: string;
+  };
+  if (request.protocol !== "jarvis.rowboat.v1") throw new Error("Unsupported JARVIS attachment protocol.");
+  const token = String(request.token || "").trim();
+  const discoveryFile = String(request.discoveryFile || "").trim();
+  if (token.length < 32 || !path.isAbsolute(discoveryFile)) throw new Error("Invalid JARVIS attachment descriptor.");
+  await jarvisBridge?.stop();
+  jarvisBridge = await startJarvisBridge(jarvisBridgeOptions({ token, discoveryFile }));
+  pendingJarvisAttachFile = "";
+  await fs.rm(resolved, { force: true }).catch(() => undefined);
+}
 
 function showApp(): void {
   if (mainWindow && !mainWindow.isDestroyed()) {
     if (mainWindow.isMinimized()) mainWindow.restore();
-    if (!mainWindow.isVisible()) mainWindow.maximize();
+    if (!mainWindow.isVisible() && !jarvisDocked) mainWindow.maximize();
     mainWindow.show();
     mainWindow.focus();
   } else {
@@ -414,7 +512,11 @@ function createWindow(options: { startHidden?: boolean } = {}) {
   // Launched-at-login starts stay hidden: the app is reachable from the
   // tray/Dock, and showApp() maximizes on first reveal.
   win.once("ready-to-show", () => {
-    if (options.startHidden) return;
+    if (options.startHidden || (jarvisManagedEmbeddedLaunch && !jarvisDocked)) return;
+    if (jarvisDocked) {
+      win.show();
+      return;
+    }
     win.maximize();
     win.show();
   });
@@ -550,6 +652,20 @@ app.whenReady().then(async () => {
     encrypt: (plain) => safeStorage.encryptString(plain).toString('base64'),
     decrypt: (encrypted) => safeStorage.decryptString(Buffer.from(encrypted, 'base64')),
   });
+  // JARVIS incorporates Rowboat with the operator's existing Codex CLI OAuth
+  // session. Unlike an interactive Rowboat sign-in, that shared session is
+  // already present at process start, so no auth-completion event would seed
+  // the first assistant model. Seed it before the renderer opens: Codex OAuth
+  // is the ready-to-use default and every API-key/local provider stays an
+  // optional addition. A saved user selection is never replaced.
+  if (process.env.ROWBOAT_USE_CODEX_AUTH === "true") {
+    try {
+      const sharedCodex = await getChatGPTStatus();
+      if (sharedCodex.signedIn) await applyCodexInitialSelection();
+    } catch (error) {
+      console.warn("[JARVIS Codex OAuth] Failed to seed the initial model:", error);
+    }
+  }
   initAppsServer().catch((error) => {
     console.error('[Apps] Failed to start:', error);
   });
@@ -662,8 +778,9 @@ app.whenReady().then(async () => {
   // may have called sessions:list — that handler blocks on
   // markSessionsIndexReady, which must fire even if the scan throws so the
   // list never hangs.
+  jarvisSessions = container.resolve<ISessions>('sessions');
   try {
-    await container.resolve<ISessions>('sessions').initialize();
+    await jarvisSessions.initialize();
   } finally {
     markSessionsIndexReady();
   }
@@ -672,6 +789,19 @@ app.whenReady().then(async () => {
   // sub-agent) → renderer, for turnId-keyed live views.
   startTurnEventsWatcher();
   startCodeRunFeedWatcher();
+
+  // Optional, authenticated loopback control plane for the incorporated
+  // JARVIS integration. A normal standalone Rowboat launch has no token or
+  // discovery path and therefore exposes no control server.
+  try {
+    if (pendingJarvisAttachFile) {
+      await attachJarvisBridgeFromFile(pendingJarvisAttachFile);
+    } else {
+      jarvisBridge = await startJarvisBridge(jarvisBridgeOptions());
+    }
+  } catch (error) {
+    console.error('[JARVIS Bridge] Failed to start:', error);
+  }
 
   // Mobile channels (WhatsApp/Telegram bridge): needs the session index, so
   // start after initialize(). Failures must never block boot.
@@ -779,6 +909,8 @@ stopSkillsWatcher();
   }
   // Kill embedded terminal shells.
   disposeAllTerminals();
+  void jarvisBridge?.stop();
+  jarvisBridge = null;
   shutdownAppsServer().catch((error) => {
     console.error('[Apps] Failed to shut down cleanly:', error);
   });

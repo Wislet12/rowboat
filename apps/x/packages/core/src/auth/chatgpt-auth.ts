@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { WorkDir } from '../config/config.js';
 import {
@@ -21,6 +22,100 @@ import {
 // IMPORTANT: never log token values — log events only.
 
 const AUTH_FILE = path.join(WorkDir, 'config', 'chatgpt-auth.json');
+const CODEX_HOME = path.resolve(
+    process.env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex'),
+);
+const CODEX_AUTH_FILE = path.join(CODEX_HOME, 'auth.json');
+const CODEX_REFRESH_LOCK = path.join(CODEX_HOME, '.rowboat-auth-refresh.lock');
+
+type CodexCliAuth = {
+    auth_mode?: string;
+    tokens?: {
+        access_token?: string;
+        refresh_token?: string;
+        id_token?: string;
+        account_id?: string;
+    };
+    last_refresh?: string;
+    [key: string]: unknown;
+};
+
+function sharedCodexAuthEnabled(): boolean {
+    if (process.env.ROWBOAT_USE_CODEX_AUTH === 'false') return false;
+    // Unit tests must remain hermetic unless a test explicitly opts into the
+    // external store. Normal source and packaged launches default to sharing
+    // the operator's existing Codex CLI ChatGPT subscription.
+    if (process.env.VITEST && process.env.ROWBOAT_USE_CODEX_AUTH !== 'true') return false;
+    return true;
+}
+
+async function readCodexCliAuth(): Promise<CodexCliAuth | null> {
+    if (!sharedCodexAuthEnabled()) return null;
+    try {
+        const parsed = JSON.parse(await fs.readFile(CODEX_AUTH_FILE, 'utf8')) as CodexCliAuth;
+        const accessToken = parsed.tokens?.access_token;
+        const refreshToken = parsed.tokens?.refresh_token;
+        return typeof accessToken === 'string' && accessToken.length > 0
+            && typeof refreshToken === 'string' && refreshToken.length > 0
+            ? parsed
+            : null;
+    } catch {
+        return null;
+    }
+}
+
+function codexCliTokenMaterial(auth: CodexCliAuth): TokenMaterial | null {
+    const accessToken = auth.tokens?.access_token;
+    const refreshToken = auth.tokens?.refresh_token;
+    return typeof accessToken === 'string' && accessToken.length > 0
+        && typeof refreshToken === 'string' && refreshToken.length > 0
+        ? { accessToken, refreshToken }
+        : null;
+}
+
+async function writeCodexCliAuth(auth: CodexCliAuth): Promise<void> {
+    await fs.mkdir(CODEX_HOME, { recursive: true });
+    const temporary = `${CODEX_AUTH_FILE}.rowboat-${process.pid}-${Date.now()}.tmp`;
+    await fs.writeFile(temporary, `${JSON.stringify(auth, null, 2)}\n`, { mode: 0o600 });
+    try {
+        await fs.rename(temporary, CODEX_AUTH_FILE);
+    } finally {
+        await fs.rm(temporary, { force: true }).catch(() => undefined);
+    }
+}
+
+async function withCodexRefreshLock<T>(operation: () => Promise<T>): Promise<T> {
+    const deadline = Date.now() + 12_000;
+    await fs.mkdir(CODEX_HOME, { recursive: true });
+    while (true) {
+        try {
+            const handle = await fs.open(CODEX_REFRESH_LOCK, 'wx', 0o600);
+            try {
+                await handle.writeFile(`${process.pid}\n${new Date().toISOString()}\n`);
+                return await operation();
+            } finally {
+                await handle.close().catch(() => undefined);
+                await fs.rm(CODEX_REFRESH_LOCK, { force: true }).catch(() => undefined);
+            }
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            if (code !== 'EEXIST') throw error;
+            try {
+                const stat = await fs.stat(CODEX_REFRESH_LOCK);
+                if (Date.now() - stat.mtimeMs > 60_000) {
+                    await fs.rm(CODEX_REFRESH_LOCK, { force: true });
+                    continue;
+                }
+            } catch {
+                continue;
+            }
+            if (Date.now() >= deadline) {
+                throw new Error('Codex authentication is currently being refreshed by another process.');
+            }
+            await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+    }
+}
 
 // Token-at-rest encryption is provided by the Electron main process
 // (safeStorage) — core stays electron-free. When no cipher is wired (or the
@@ -314,12 +409,86 @@ async function performRefresh(refreshToken: string): Promise<string> {
     return body.access_token;
 }
 
+async function refreshSharedCodexAuth(): Promise<string> {
+    return withCodexRefreshLock(async () => {
+        // Codex or another Rowboat process may have refreshed while this
+        // process waited for the cross-process lock. Always re-read first.
+        const current = await readCodexCliAuth();
+        const material = current ? codexCliTokenMaterial(current) : null;
+        if (!current || !material) throw new ChatGPTAuthRequiredError();
+
+        const now = Math.floor(Date.now() / 1000);
+        const currentExp = decodeJwtClaims(material.accessToken)?.exp;
+        if (typeof currentExp === 'number' && currentExp - now > CHATGPT_REFRESH_MARGIN_SECONDS) {
+            return material.accessToken;
+        }
+
+        let res: Response;
+        try {
+            res = await fetch(CHATGPT_TOKEN_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    client_id: CHATGPT_CLIENT_ID,
+                    grant_type: 'refresh_token',
+                    refresh_token: material.refreshToken,
+                }),
+                signal: AbortSignal.timeout(30_000),
+            });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            throw new Error(`Shared Codex token refresh failed: ${message}`);
+        }
+        if (res.status === 400 || res.status === 401) {
+            // Never erase or revoke the Codex CLI's authoritative store from
+            // Rowboat. Codex/JARVIS remains the owner of sign-in recovery.
+            throw new ChatGPTAuthRequiredError(
+                'The shared JARVIS/Codex ChatGPT session expired. Sign in again through Codex or JARVIS.',
+            );
+        }
+        if (!res.ok) throw new Error(`Shared Codex token refresh failed: HTTP ${res.status}`);
+
+        const body = await res.json() as {
+            id_token?: string;
+            access_token?: string;
+            refresh_token?: string;
+        };
+        if (!body.access_token) throw new Error('Shared Codex token refresh returned no access token');
+
+        const next: CodexCliAuth = {
+            ...current,
+            tokens: {
+                ...current.tokens,
+                access_token: body.access_token,
+                refresh_token: body.refresh_token || material.refreshToken,
+                ...(body.id_token ? { id_token: body.id_token } : {}),
+            },
+            last_refresh: new Date().toISOString(),
+        };
+        await writeCodexCliAuth(next);
+        console.log('[ChatGPTAuth] Shared JARVIS/Codex access token refreshed');
+        return body.access_token;
+    });
+}
+
 /**
  * The one seam for consumers (the Codex Responses model client): returns a
  * valid access token, transparently refreshing when within 5 minutes of
  * expiry. Throws ChatGPTAuthRequiredError when there is no usable session.
  */
 export async function getChatGPTAccessToken(): Promise<string> {
+    const shared = await readCodexCliAuth();
+    if (shared) {
+        const material = codexCliTokenMaterial(shared);
+        if (!material) throw new ChatGPTAuthRequiredError();
+        const exp = decodeJwtClaims(material.accessToken)?.exp;
+        const now = Math.floor(Date.now() / 1000);
+        if (typeof exp !== 'number' || exp - now > CHATGPT_REFRESH_MARGIN_SECONDS) {
+            return material.accessToken;
+        }
+        return refreshSharedCodexAuth();
+    }
+
     const auth = await readAuth();
     if (!auth) {
         throw new ChatGPTAuthRequiredError();
@@ -344,6 +513,20 @@ export async function getChatGPTAccessToken(): Promise<string> {
 
 /** Connection state for the UI. Never returns token values. */
 export async function getChatGPTStatus(): Promise<{ signedIn: boolean; email?: string; accountId?: string }> {
+    const shared = await readCodexCliAuth();
+    if (shared) {
+        const identity = extractIdentity([
+            shared.tokens?.id_token,
+            shared.tokens?.access_token,
+        ]);
+        const accountId = identity.accountId || shared.tokens?.account_id;
+        return {
+            signedIn: true,
+            ...(identity.email ? { email: identity.email } : {}),
+            ...(accountId ? { accountId } : {}),
+        };
+    }
+
     const auth = await readAuth();
     if (!auth || (!auth.tokensEncrypted && !auth.tokens)) {
         return { signedIn: false };
@@ -355,6 +538,13 @@ export async function getChatGPTStatus(): Promise<{ signedIn: boolean; email?: s
     };
 }
 
+/** Non-sensitive provenance for status surfaces and the JARVIS bridge. */
+export async function getChatGPTAuthSource(): Promise<'codex_cli_shared' | 'rowboat_local' | 'none'> {
+    if (await readCodexCliAuth()) return 'codex_cli_shared';
+    const auth = await readAuth();
+    return auth && (auth.tokensEncrypted || auth.tokens) ? 'rowboat_local' : 'none';
+}
+
 /**
  * Sign out: best-effort revocation at auth.openai.com (endpoint + request
  * shape verified in codex-rs/login/src/auth/revoke.rs — refresh token first,
@@ -362,6 +552,11 @@ export async function getChatGPTStatus(): Promise<{ signedIn: boolean; email?: s
  * store. Revocation failure never blocks the local sign-out.
  */
 export async function signOutChatGPT(): Promise<void> {
+    if (await readCodexCliAuth()) {
+        console.log('[ChatGPTAuth] Shared JARVIS/Codex sign-in remains owned by Codex; Rowboat did not revoke it');
+        return;
+    }
+
     const auth = await readAuth();
     if (auth) {
         const material = await getTokenMaterial(auth);

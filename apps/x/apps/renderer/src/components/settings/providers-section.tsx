@@ -203,7 +203,7 @@ export function ProvidersSection({ dialogOpen, variant = "settings" }: {
 
       <Button variant="outline" size="sm" onClick={() => setAddOpen(true)}>
         <Plus className="size-4 mr-1" />
-        Add provider
+        {variant === "onboarding" ? "Add optional provider" : "Add provider"}
       </Button>
 
       {/* Defer background tasks while chatting */}

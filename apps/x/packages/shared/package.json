@@ -5,7 +5,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "build": "node ../../scripts/fs-task.mjs clean dist && tsc -p tsconfig.build.json",
     "dev": "tsc -w",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
