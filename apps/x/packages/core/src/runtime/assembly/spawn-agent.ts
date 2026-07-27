@@ -59,10 +59,10 @@ export const SpawnAgentInput = z.object({
             "Model-call budget for the sub-agent. Defaults to the configured global limit, which is also the cap — higher values are clamped to it.",
         ),
     reasoning_effort: z
-        .enum(["low", "medium", "high"])
+        .enum(["low", "medium", "high", "xhigh", "max", "ultra"])
         .optional()
         .describe(
-            "Optional reasoning-effort override for the sub-agent turn. Omit for auto/provider default. Use `low` for routine extraction or summarization, `medium` for multi-step synthesis, and `high` only when the child task truly needs deeper reasoning.",
+            "Optional reasoning-effort override for the sub-agent turn. Omit for auto/provider default. Codex models may additionally advertise `xhigh`, `max`, or `ultra`; use only an effort exposed by the selected model.",
         ),
 });
 

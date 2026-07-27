@@ -25,6 +25,9 @@ export interface CatalogModelEntry {
     name?: string;
     /** models.dev "supports reasoning" flag; absent = unknown. */
     reasoning?: boolean;
+    /** Provider-advertised Codex effort ladder and default. */
+    defaultReasoningEffort?: string;
+    supportedReasoningEfforts?: string[];
 }
 
 export interface CatalogProviderEntry {

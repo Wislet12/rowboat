@@ -21,8 +21,13 @@ const ANTHROPIC_OUTPUT_HEADROOM = 4096;
 
 export function parseReasoningEffort(value: unknown): ReasoningEffortLevel | undefined {
     return value === "low" || value === "medium" || value === "high"
+        || value === "xhigh" || value === "max" || value === "ultra"
         ? value
         : undefined;
+}
+
+function isStandardEffort(effort: ReasoningEffortLevel): effort is "low" | "medium" | "high" {
+    return effort === "low" || effort === "medium" || effort === "high";
 }
 
 /**
@@ -49,11 +54,11 @@ export function mapReasoningEffort(
 ): ReasoningRequestOptions | undefined {
     switch (flavor) {
         case "openai": {
-            if (supportsReasoning !== true) return undefined;
+            if (supportsReasoning !== true || !isStandardEffort(effort)) return undefined;
             return { providerOptions: { openai: { reasoningEffort: effort } } };
         }
         case "anthropic": {
-            if (supportsReasoning !== true) return undefined;
+            if (supportsReasoning !== true || !isStandardEffort(effort)) return undefined;
             if (effort === "low") {
                 return { providerOptions: { anthropic: { thinking: { type: "disabled" } } } };
             }
@@ -66,7 +71,7 @@ export function mapReasoningEffort(
             };
         }
         case "google": {
-            if (supportsReasoning !== true) return undefined;
+            if (supportsReasoning !== true || !isStandardEffort(effort)) return undefined;
             const id = modelId.toLowerCase();
             if (id.includes("gemini-3")) {
                 // Gemini 3 Pro exposes only low/high thinking levels; its
@@ -92,7 +97,7 @@ export function mapReasoningEffort(
         }
         case "openrouter":
         case "rowboat": {
-            if (supportsReasoning === false) return undefined;
+            if (supportsReasoning === false || !isStandardEffort(effort)) return undefined;
             return { providerOptions: { openrouter: { reasoning: { effort } } } };
         }
         case "codex": {

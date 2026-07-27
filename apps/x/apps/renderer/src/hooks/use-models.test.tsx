@@ -34,7 +34,7 @@ function serveCatalog(catalog: {
     flavor?: string
     status?: 'ok' | 'error'
     error?: string
-    models: Array<{ id: string; reasoning?: boolean }>
+    models: Array<{ id: string; reasoning?: boolean; supportedReasoningEfforts?: string[] }>
   }>
   defaultModel: { provider: string; model: string } | null
 }): void {
@@ -57,6 +57,32 @@ beforeEach(() => {
 })
 
 describe('useModels', () => {
+  it('preserves the exact reasoning-effort ladder advertised by Codex OAuth', async () => {
+    serveCatalog({
+      providers: [{
+        id: 'codex',
+        models: [{
+          id: 'gpt-5.6-sol',
+          reasoning: true,
+          supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+        }],
+      }],
+      defaultModel: { provider: 'codex', model: 'gpt-5.6-sol' },
+    })
+
+    const { result } = renderHook(() => useModels())
+    await waitFor(() => expect(result.current.groups.length).toBe(1))
+
+    expect(result.current.reasoningEffortsByKey['codex/gpt-5.6-sol']).toEqual([
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+      'ultra',
+    ])
+  })
+
   it('shares one fetch across concurrently mounted consumers', async () => {
     serveCatalog({
       providers: [

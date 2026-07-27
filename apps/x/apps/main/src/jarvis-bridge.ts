@@ -12,6 +12,11 @@ import {
   outstandingPermissions,
   reduceTurn,
 } from "@x/shared/dist/turns.js";
+import {
+  getJarvisExecutionProfile,
+  setJarvisExecutionProfile,
+  type JarvisReasoningEffort,
+} from "./jarvis-execution-profile.js";
 
 const PROTOCOL = "jarvis.rowboat.v1";
 const MAX_BODY_BYTES = 256 * 1024;
@@ -24,13 +29,20 @@ type DelegationRecord = {
   turnId: string;
   objective: string;
   model: string;
-  reasoningEffort: "low" | "medium" | "high";
+  reasoningEffort: "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
   createdAt: string;
 };
 
 type JarvisBridgeOptions = {
   sessions: ISessions;
   focus: () => void;
+  onExecutionProfile?: (profile: {
+    provider: "codex";
+    model: string;
+    reasoningEffort: JarvisReasoningEffort;
+    enforcedAtChatLevel: true;
+    updatedAt: string;
+  }) => Promise<void> | void;
   token?: string;
   discoveryFile?: string;
   windowSnapshot?: () => {
@@ -96,14 +108,50 @@ async function readJsonBody(request: IncomingMessage): Promise<Record<string, un
   return parsed as Record<string, unknown>;
 }
 
-async function codexModels(): Promise<Array<{ id: string; name: string; reasoning: boolean | null }>> {
+async function codexModels(): Promise<Array<{
+  id: string;
+  name: string;
+  reasoning: boolean | null;
+  defaultReasoningEffort: string;
+  supportedReasoningEfforts: string[];
+}>> {
   const catalog = await getModelCatalog();
   const provider = catalog.providers.find((entry) => entry.id === "codex");
   return (provider?.models || []).map((model) => ({
     id: model.id,
     name: model.name || model.id,
     reasoning: typeof model.reasoning === "boolean" ? model.reasoning : null,
+    defaultReasoningEffort: model.defaultReasoningEffort || "medium",
+    supportedReasoningEfforts: model.supportedReasoningEfforts?.length
+      ? model.supportedReasoningEfforts
+      : ["low", "medium", "high"],
   }));
+}
+
+async function resolveCodexExecutionProfile(
+  requestedModel: string,
+  requestedReasoning: string,
+): Promise<{
+  model: string;
+  reasoningEffort: JarvisReasoningEffort;
+  models: Awaited<ReturnType<typeof codexModels>>;
+}> {
+  const models = await codexModels();
+  const model = requestedModel || models[0]?.id || "gpt-5.6-sol";
+  if (models.length > 0 && !models.some((entry) => entry.id === model)) {
+    throw new Error(`Unsupported Codex model: ${compact(model, 120)}`);
+  }
+  const selectedModel = models.find((entry) => entry.id === model);
+  const supportedReasoningEfforts = selectedModel?.supportedReasoningEfforts?.length
+    ? selectedModel.supportedReasoningEfforts
+    : ["low", "medium", "high"];
+  const fallbackReasoningEffort = supportedReasoningEfforts.includes(selectedModel?.defaultReasoningEffort || "")
+    ? selectedModel!.defaultReasoningEffort
+    : supportedReasoningEfforts[0] || "medium";
+  const reasoningEffort = (supportedReasoningEfforts.includes(requestedReasoning)
+    ? requestedReasoning
+    : fallbackReasoningEffort) as JarvisReasoningEffort;
+  return { model, reasoningEffort, models };
 }
 
 function terminalError(state: ReturnType<typeof reduceTurn>): string {
@@ -159,6 +207,7 @@ async function writeDiscovery(filePath: string, endpoint: string): Promise<void>
 export async function startJarvisBridge({
   sessions,
   focus,
+  onExecutionProfile = () => undefined,
   token: tokenOverride,
   discoveryFile: discoveryFileOverride,
   windowSnapshot = () => ({ nativeHandle: "", visible: false, docked: false }),
@@ -199,6 +248,14 @@ export async function startJarvisBridge({
             accountId: auth.accountId || "",
           },
           models,
+          executionProfile: getJarvisExecutionProfile(),
+          plan: {
+            source: "jarvis_codex_oauth",
+            label: "JARVIS Codex OAuth",
+            constrained: false,
+            billingEnforced: false,
+            detail: "The Codex OAuth provider calls the signed-in ChatGPT/Codex backend directly. Rowboat gateway plan and credit limits are not consulted.",
+          },
           features: [
             "local_markdown_knowledge_graph",
             "backlinked_brain",
@@ -225,6 +282,8 @@ export async function startJarvisBridge({
             "permission_aware_tools",
             "codex_oauth",
             "codex_model_selection",
+            "codex_reasoning_effort_selection",
+            "jarvis_codex_oauth_unmetered_by_rowboat",
             "optional_provider_profiles",
             "local_models",
           ],
@@ -236,6 +295,21 @@ export async function startJarvisBridge({
       }
       if (method === "GET" && url.pathname === "/v1/models") {
         writeJson(response, 200, { protocol: PROTOCOL, provider: "codex", models: await codexModels() });
+        return;
+      }
+      if (method === "POST" && url.pathname === "/v1/execution-profile") {
+        const body = await readJsonBody(request);
+        const resolved = await resolveCodexExecutionProfile(
+          String(body.model || "").trim(),
+          String(body.reasoningEffort || "medium").trim().toLowerCase(),
+        );
+        const executionProfile = setJarvisExecutionProfile(resolved.model, resolved.reasoningEffort);
+        await onExecutionProfile(executionProfile);
+        writeJson(response, 200, {
+          protocol: PROTOCOL,
+          status: "enforced",
+          executionProfile,
+        });
         return;
       }
       if (method === "POST" && url.pathname === "/v1/focus") {
@@ -279,15 +353,8 @@ export async function startJarvisBridge({
           writeJson(response, 409, { protocol: PROTOCOL, error: "Shared JARVIS/Codex ChatGPT sign-in is required." });
           return;
         }
-        const models = await codexModels();
-        const model = requestedModel || models[0]?.id || "gpt-5.6-sol";
-        if (models.length > 0 && !models.some((entry) => entry.id === model)) {
-          writeJson(response, 400, { protocol: PROTOCOL, error: `Unsupported Codex model: ${compact(model, 120)}` });
-          return;
-        }
-        const reasoningEffort = (["low", "medium", "high"].includes(requestedReasoning)
-          ? requestedReasoning
-          : "medium") as "low" | "medium" | "high";
+        const resolved = await resolveCodexExecutionProfile(requestedModel, requestedReasoning);
+        const { model, reasoningEffort } = resolved;
         const sessionId = await sessions.createSession({ title: `JARVIS · ${objective.slice(0, 90)}` });
         const input = context
           ? `${objective}\n\nJARVIS context:\n${context}`

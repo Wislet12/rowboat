@@ -6,7 +6,7 @@ import { z } from "zod";
 // send nothing and let the provider default apply. Provider-specific
 // syntax (OpenAI reasoningEffort, Anthropic thinking budgets, Gemini
 // thinkingLevel, OpenRouter reasoning.effort) is mapped at invoke time.
-export const ReasoningEffort = z.enum(["low", "medium", "high"]);
+export const ReasoningEffort = z.enum(["low", "medium", "high", "xhigh", "max", "ultra"]);
 
 // A provider entry: its TYPE (flavor) plus credentials and connection
 // preferences. Deliberately carries NO model fields — model lists are always

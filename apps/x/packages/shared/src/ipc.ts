@@ -673,6 +673,8 @@ const ipcSchemas = {
           // models.dev "supports reasoning/extended thinking" flag; absent =
           // unknown. Gates the composer's reasoning-effort control.
           reasoning: z.boolean().optional(),
+          defaultReasoningEffort: z.string().optional(),
+          supportedReasoningEfforts: z.array(z.string()).optional(),
         })),
       })),
       // The effective runtime default (what runs when nothing is picked).

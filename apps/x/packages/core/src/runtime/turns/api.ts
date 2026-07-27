@@ -22,7 +22,7 @@ export interface CreateTurnInput {
         maxModelCalls?: number;
         // Canonical per-turn reasoning effort; omitted = auto (provider
         // default, byte-identical requests to today).
-        reasoningEffort?: "low" | "medium" | "high";
+        reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
     };
 }
 

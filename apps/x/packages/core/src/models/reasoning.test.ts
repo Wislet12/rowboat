@@ -6,7 +6,9 @@ describe("parseReasoningEffort", () => {
         expect(parseReasoningEffort("low")).toBe("low");
         expect(parseReasoningEffort("medium")).toBe("medium");
         expect(parseReasoningEffort("high")).toBe("high");
-        expect(parseReasoningEffort("xhigh")).toBeUndefined();
+        expect(parseReasoningEffort("xhigh")).toBe("xhigh");
+        expect(parseReasoningEffort("max")).toBe("max");
+        expect(parseReasoningEffort("ultra")).toBe("ultra");
         expect(parseReasoningEffort(3)).toBeUndefined();
         expect(parseReasoningEffort(undefined)).toBeUndefined();
     });
@@ -73,6 +75,10 @@ describe("mapReasoningEffort", () => {
             providerOptions: { openai: { reasoningEffort: "high" } },
         });
         expect(mapReasoningEffort("codex", "gpt-5.5", "medium", false)).toBeUndefined();
+        expect(mapReasoningEffort("codex", "gpt-5.6-sol", "ultra", undefined)).toEqual({
+            providerOptions: { openai: { reasoningEffort: "ultra" } },
+        });
+        expect(mapReasoningEffort("openai", "o4-mini", "ultra", true)).toBeUndefined();
     });
 
     it("sends nothing for flavors without a safe parameter", () => {

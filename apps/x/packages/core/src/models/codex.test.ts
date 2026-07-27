@@ -134,7 +134,14 @@ describe('listCodexModels', () => {
                 models: [
                     { slug: 'gpt-5.4', priority: 2, visibility: 'list' },
                     { slug: 'codex-auto-review', priority: 0, visibility: 'hide' },
-                    { slug: 'gpt-5.5', priority: 1, visibility: 'list', display_name: 'GPT-5.5' },
+                    {
+                        slug: 'gpt-5.5',
+                        priority: 1,
+                        visibility: 'list',
+                        display_name: 'GPT-5.5',
+                        default_reasoning_level: 'high',
+                        supported_reasoning_levels: [{ effort: 'low' }, { effort: 'medium' }, { effort: 'high' }, { effort: 'xhigh' }],
+                    },
                 ],
             }), { status: 200 });
         }) as typeof fetch;
@@ -144,8 +151,19 @@ describe('listCodexModels', () => {
         expect(result.providers[0]?.id).toBe('codex');
         expect(result.providers[0]?.name).toBe('OpenAI Codex');
         expect(result.providers[0]?.models).toEqual([
-            { id: 'gpt-5.5', name: 'GPT-5.5', reasoning: true },
-            { id: 'gpt-5.4', reasoning: true },
+            {
+                id: 'gpt-5.5',
+                name: 'GPT-5.5',
+                defaultReasoningEffort: 'high',
+                supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+                reasoning: true,
+            },
+            {
+                id: 'gpt-5.4',
+                defaultReasoningEffort: 'medium',
+                supportedReasoningEfforts: ['medium'],
+                reasoning: true,
+            },
         ]);
         expect(seenHeaders?.get('Authorization')).toBe('Bearer test-access-token');
         expect(seenHeaders?.get('chatgpt-account-id')).toBe('acct-123');

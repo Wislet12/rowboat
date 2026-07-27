@@ -53,13 +53,16 @@ export interface ErrorMessage {
   timestamp: number
 }
 
-export type ReasoningEffortLevel = 'low' | 'medium' | 'high'
+export type ReasoningEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra'
 
 // User-facing names for the canonical effort ladder ("auto" = absent).
 export const REASONING_EFFORT_LABELS: Record<ReasoningEffortLevel, string> = {
   low: 'Fast',
   medium: 'Balanced',
   high: 'Thorough',
+  xhigh: 'X-High',
+  max: 'Max',
+  ultra: 'Ultra',
 }
 
 export interface TurnUsageMessage {

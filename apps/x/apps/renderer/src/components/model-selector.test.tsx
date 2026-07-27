@@ -46,6 +46,42 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('ModelSelector', () => {
+  it('shows every reasoning effort advertised by a Codex OAuth model', async () => {
+    handlers['models:list'] = async () => ({
+      providers: [{
+        id: 'codex',
+        flavor: 'codex',
+        status: 'ok',
+        models: [{
+          id: 'gpt-5.6-sol',
+          reasoning: true,
+          supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+        }],
+      }],
+      defaultModel: { provider: 'codex', model: 'gpt-5.6-sol' },
+    })
+    const onEffortChange = vi.fn()
+    render(
+      <ModelSelector
+        variant="pill"
+        value={{ provider: 'codex', model: 'gpt-5.6-sol' }}
+        onChange={() => {}}
+        effort="low"
+        onEffortChange={onEffortChange}
+      />,
+    )
+
+    const effortButton = await screen.findByRole('button', { name: /Fast/ })
+    fireEvent.pointerDown(effortButton, { button: 0, ctrlKey: false })
+
+    expect(await screen.findByText('X-High')).toBeInTheDocument()
+    expect(screen.getByText('Max')).toBeInTheDocument()
+    const ultra = screen.getByText('Ultra')
+    expect(ultra).toBeInTheDocument()
+    fireEvent.click(ultra)
+    expect(onEffortChange).toHaveBeenCalledWith('ultra')
+  })
+
   it('renders the defaultOption label when value is null and round-trips null through onChange', async () => {
     serveTwoProviders()
     const onChange = vi.fn()

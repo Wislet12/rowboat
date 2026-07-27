@@ -59,6 +59,26 @@ const CODEX_FALLBACK_MODELS = [
     'gpt-5.4',
     'gpt-5.4-mini',
 ];
+const CODEX_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
+type CodexReasoningEffort = typeof CODEX_REASONING_EFFORTS[number];
+
+function normalizeCodexReasoningEfforts(
+    values: unknown,
+    fallback: CodexReasoningEffort = 'medium',
+): CodexReasoningEffort[] {
+    const rows = Array.isArray(values) ? values : [];
+    const efforts = [...new Set(rows
+        .map((value) => typeof value === 'string'
+            ? value
+            : value && typeof value === 'object'
+                ? String((value as { effort?: unknown; reasoningEffort?: unknown }).effort
+                    ?? (value as { reasoningEffort?: unknown }).reasoningEffort
+                    ?? '')
+                : '')
+        .map((value) => value.trim().toLowerCase())
+        .filter((value): value is CodexReasoningEffort => (CODEX_REASONING_EFFORTS as readonly string[]).includes(value)))];
+    return efforts.length ? efforts : [fallback];
+}
 
 /**
  * Wire-level normalization for the Codex backend. Applied via fetch (not
@@ -261,6 +281,8 @@ type ProviderSummary = {
         id: string;
         name?: string;
         reasoning?: boolean;
+        defaultReasoningEffort?: string;
+        supportedReasoningEfforts?: string[];
     }>;
 };
 
@@ -272,27 +294,62 @@ type ProviderSummary = {
  * (models.dev doesn't know this flavor).
  */
 export async function listCodexModels(): Promise<{ providers: ProviderSummary[] }> {
-    let discovered: Array<{ id: string; name?: string }> = [];
+    let discovered: Array<{
+        id: string;
+        name?: string;
+        defaultReasoningEffort?: CodexReasoningEffort;
+        supportedReasoningEfforts?: CodexReasoningEffort[];
+    }> = [];
     try {
         const res = await codexFetch(`${CODEX_BASE_URL}/models?client_version=${await codexClientVersion()}`);
         if (res.ok) {
             const body = await res.json() as {
-                models?: Array<{ slug?: string; display_name?: string; visibility?: string; priority?: number }>;
+                models?: Array<{
+                    slug?: string;
+                    display_name?: string;
+                    visibility?: string;
+                    priority?: number;
+                    default_reasoning_level?: string;
+                    supported_reasoning_levels?: unknown[];
+                }>;
             };
             discovered = (body.models ?? [])
                 // Utility models (e.g. codex-auto-review) carry visibility
                 // "hide"; picker-visible ones carry "list".
-                .filter((m): m is { slug: string; display_name?: string; priority?: number } =>
+                .filter((m): m is {
+                    slug: string;
+                    display_name?: string;
+                    priority?: number;
+                    default_reasoning_level?: string;
+                    supported_reasoning_levels?: unknown[];
+                } =>
                     typeof m.slug === 'string' && m.slug.length > 0
                     && m.visibility !== 'hide' && m.visibility !== 'hidden')
                 .sort((a, b) => (a.priority ?? Number.MAX_SAFE_INTEGER) - (b.priority ?? Number.MAX_SAFE_INTEGER))
-                .map((m) => ({ id: m.slug, ...(m.display_name ? { name: m.display_name } : {}) }));
+                .map((m) => {
+                    const supportedReasoningEfforts = normalizeCodexReasoningEfforts(m.supported_reasoning_levels);
+                    const advertisedDefault = String(m.default_reasoning_level || '').trim().toLowerCase();
+                    const defaultReasoningEffort = supportedReasoningEfforts.includes(advertisedDefault as CodexReasoningEffort)
+                        ? advertisedDefault as CodexReasoningEffort
+                        : supportedReasoningEfforts.includes('medium')
+                            ? 'medium'
+                            : supportedReasoningEfforts[0];
+                    return {
+                        id: m.slug,
+                        ...(m.display_name ? { name: m.display_name } : {}),
+                        defaultReasoningEffort,
+                        supportedReasoningEfforts,
+                    };
+                });
         }
     } catch (error) {
         console.warn('[Codex] Model discovery failed; using fallback list:', error instanceof Error ? error.message : error);
     }
-    const models = (discovered.length > 0 ? discovered : CODEX_FALLBACK_MODELS.map((id) => ({ id })))
-        .map((m) => ({ ...m, reasoning: true }));
+    const models = (discovered.length > 0 ? discovered : CODEX_FALLBACK_MODELS.map((id) => ({
+        id,
+        defaultReasoningEffort: 'medium' as const,
+        supportedReasoningEfforts: [...CODEX_REASONING_EFFORTS],
+    }))).map((m) => ({ ...m, reasoning: true }));
     return {
         providers: [{
             id: 'codex',

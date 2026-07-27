@@ -123,6 +123,7 @@ import {
   normalizeToolOutput,
   parseAttachedFiles,
   REASONING_EFFORT_LABELS,
+  type ReasoningEffortLevel,
   toToolState,
 } from '@/lib/chat-conversation'
 import { COMPOSIO_DISPLAY_NAMES as composioDisplayNames } from '@x/shared/src/composio.js'
@@ -1919,7 +1920,7 @@ function App() {
   const selectedModelByTabRef = useRef(new Map<string, { provider: string; model: string }>())
   // Reasoning effort is per-tab, next-turn intent like the model selection —
   // but unlike model it is never frozen on a run; it applies turn by turn.
-  const reasoningEffortByTabRef = useRef(new Map<string, 'low' | 'medium' | 'high'>())
+  const reasoningEffortByTabRef = useRef(new Map<string, ReasoningEffortLevel>())
   // Work directory is per-chat. Keyed by tab id; null/absent means none set.
   const [workDirByTab, setWorkDirByTab] = useState<Record<string, string | null>>({})
   const workDirByTabRef = useRef(workDirByTab)

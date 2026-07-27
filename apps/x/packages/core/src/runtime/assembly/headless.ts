@@ -38,7 +38,7 @@ export interface HeadlessAgentOptions {
     maxModelCalls?: number;
     // Canonical reasoning effort for this run; omitted = auto (provider
     // default). Background callers that want cheap turns can pin "low".
-    reasoningEffort?: "low" | "medium" | "high";
+    reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
     signal?: AbortSignal;
     // Old waitForRunCompletion({ throwOnError: true }) semantics: `done`
     // rejects with HeadlessRunError unless the turn completes.

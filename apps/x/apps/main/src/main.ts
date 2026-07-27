@@ -77,6 +77,7 @@ import { createAppTray, hasTray, isRecordingActive, markPendingToggleMeetingNote
 import { initMeetingPopup, showMeetingPopup } from "./meeting-popup.js";
 import { initQuickAsk } from "./quick-ask.js";
 import { startJarvisBridge, type JarvisBridgeHandle } from "./jarvis-bridge.js";
+import type { IModelConfigRepo } from "@x/core/dist/models/repo.js";
 
 // Captured as early as possible so it reflects actual process start. Used to
 // gate grace-eligible notifications (e.g. the burst of background-task
@@ -412,6 +413,20 @@ function jarvisBridgeOptions(overrides: { token?: string; discoveryFile?: string
     focus: focusForJarvis,
     windowSnapshot: jarvisWindowSnapshot,
     setDocked: setJarvisDocked,
+    onExecutionProfile: async (profile: {
+      provider: "codex";
+      model: string;
+      reasoningEffort: "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+    }) => {
+      // Keep the upstream Assistant selector aligned for newly opened chats
+      // while the final IPC boundary enforces this same profile for every
+      // actual turn, including tabs that had an older local selection.
+      const repo = container.resolve<IModelConfigRepo>("modelConfigRepo");
+      await repo.updateConfig({ assistantModel: { provider: profile.provider, model: profile.model } });
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("jarvis:execution-profile", profile);
+      }
+    },
     ...overrides,
   };
 }

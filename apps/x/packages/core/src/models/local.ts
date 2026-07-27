@@ -10,7 +10,7 @@ import type { LlmProvider } from "@x/shared/dist/models.js";
 // `contextLength` in models.json.
 export const DEFAULT_OLLAMA_CONTEXT_LENGTH = 32768;
 
-export type ReasoningEffort = "low" | "medium" | "high";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 // Local models default to snappy: gpt-oss at medium effort spends ~3x the
 // tokens of low on the same answer, and the AI SDK Ollama provider can't
@@ -68,6 +68,9 @@ export function resolveThinkValue(
     effort: ReasoningEffort,
     supportsThinking: boolean,
 ): boolean | string | undefined {
+    if (effort === "xhigh" || effort === "max" || effort === "ultra") {
+        return undefined;
+    }
     if (/gpt-oss/i.test(modelName)) {
         return effort;
     }

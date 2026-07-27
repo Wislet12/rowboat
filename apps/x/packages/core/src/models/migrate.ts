@@ -41,7 +41,7 @@ export const LlmModelConfigV1 = z.object({
     baseURL: z.string().optional(),
     headers: z.record(z.string(), z.string()).optional(),
     contextLength: z.number().int().positive().optional(),
-    reasoningEffort: z.enum(["low", "medium", "high"]).optional(),
+    reasoningEffort: z.enum(["low", "medium", "high", "xhigh", "max", "ultra"]).optional(),
     model: z.string().optional(),
     models: z.array(z.string()).optional(),
     knowledgeGraphModel: z.string().optional(),

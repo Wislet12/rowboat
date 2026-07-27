@@ -22,7 +22,7 @@ import { cn } from '@/lib/utils'
 
 export type { ModelRef } from '@/hooks/use-models'
 
-export type ReasoningEffortLevel = 'low' | 'medium' | 'high'
+export type ReasoningEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra'
 
 const TOOLTIP_DELAY_MS = 1000
 
@@ -46,6 +46,9 @@ const REASONING_EFFORT_OPTIONS: Array<{ value: '' | ReasoningEffortLevel; label:
   { value: 'low', label: 'Fast', hint: 'Minimal thinking' },
   { value: 'medium', label: 'Balanced', hint: 'Moderate thinking' },
   { value: 'high', label: 'Thorough', hint: 'Deep thinking, costs more' },
+  { value: 'xhigh', label: 'X-High', hint: 'Extended Codex reasoning' },
+  { value: 'max', label: 'Max', hint: 'Maximum Codex reasoning' },
+  { value: 'ultra', label: 'Ultra', hint: 'Highest advertised Codex effort' },
 ]
 
 function getModelDisplayName(model: string) {
@@ -168,7 +171,7 @@ export function ModelSelector({
   effort = '',
   onEffortChange,
 }: ModelSelectorProps) {
-  const { groups: allGroups, reasoningByKey, defaultModel, catalogByProvider, refresh } = useModels()
+  const { groups: allGroups, reasoningByKey, reasoningEffortsByKey, defaultModel, catalogByProvider, refresh } = useModels()
 
   // inheritDefault is defaultOption with placeholder styling — one sentinel
   // code path, not two.
@@ -283,10 +286,18 @@ export function ModelSelector({
     : (value ? `${value.provider}/${value.model}` : '')
       || (defaultModel ? `${defaultModel.provider}/${defaultModel.model}` : '')
   const reasoningAvailable = reasoningByKey[effectiveModelKey] === true
+  const advertisedEfforts = reasoningEffortsByKey[effectiveModelKey]
+  const visibleReasoningOptions = useMemo(() => REASONING_EFFORT_OPTIONS.filter((option) =>
+    option.value === ''
+    || (advertisedEfforts?.length
+      ? advertisedEfforts.includes(option.value)
+      : option.value === 'low' || option.value === 'medium' || option.value === 'high')
+  ), [advertisedEfforts])
 
   const handleEffortChange = useCallback((raw: string) => {
-    onEffortChange?.(raw === 'low' || raw === 'medium' || raw === 'high' ? raw : '')
-  }, [onEffortChange])
+    const selected = visibleReasoningOptions.find((option) => option.value === raw)?.value
+    onEffortChange?.(selected ?? '')
+  }, [onEffortChange, visibleReasoningOptions])
 
   // Switching to a model without reasoning support drops a stale selection —
   // otherwise the next message would carry an effort the model rejects.
@@ -355,7 +366,7 @@ export function ModelSelector({
           </Tooltip>
           <DropdownMenuContent align="end">
             <DropdownMenuRadioGroup value={effort} onValueChange={handleEffortChange}>
-              {REASONING_EFFORT_OPTIONS.map((option) => (
+              {visibleReasoningOptions.map((option) => (
                 <DropdownMenuRadioItem key={option.value || 'auto'} value={option.value}>
                   <span>{option.label}</span>
                   <span className="ml-2 text-xs text-muted-foreground">{option.hint}</span>

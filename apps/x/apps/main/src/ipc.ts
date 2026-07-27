@@ -60,6 +60,10 @@ import { readProjectDir, readProjectFile } from '@x/core/dist/code-mode/projects
 import { ensureTerminal, writeTerminal, resizeTerminal, disposeTerminal } from './terminal.js';
 import type { CodeSession } from '@x/shared/dist/code-sessions.js';
 import { invalidateCopilotInstructionsCache } from '@x/core/dist/runtime/assembly/copilot/instructions.js';
+import {
+  enforceJarvisExecutionProfile,
+  getJarvisExecutionProfile,
+} from './jarvis-execution-profile.js';
 import { triggerSync as triggerGranolaSync } from '@x/core/dist/knowledge/granola/sync.js';
 import { ISlackConfigRepo } from '@x/core/dist/slack/repo.js';
 import { IChannelsConfigRepo } from '@x/core/dist/channels/repo.js';
@@ -1245,7 +1249,15 @@ export function setupIpcHandlers() {
       return container.resolve<ISessions>('sessions').getTurn(args.turnId);
     },
     'sessions:sendMessage': async (_event, args) => {
-      return container.resolve<ISessions>('sessions').sendMessage(args.sessionId, args.input, args.config);
+      const config = enforceJarvisExecutionProfile(args.config);
+      const result = await container.resolve<ISessions>('sessions').sendMessage(args.sessionId, args.input, config);
+      const executionProfile = getJarvisExecutionProfile();
+      if (executionProfile) {
+        console.log(
+          `[JARVIS execution] chat turn=${result.turnId} model=${executionProfile.model} reasoning=${executionProfile.reasoningEffort}`,
+        );
+      }
+      return result;
     },
     'sessions:respondToPermission': async (_event, args) => {
       await container.resolve<ISessions>('sessions').respondToPermission(args.turnId, args.toolCallId, args.decision, args.metadata);

@@ -26,6 +26,9 @@ export interface ModelsSnapshot {
   // Per-model reasoning capability ("provider/model" → flag) from the
   // catalog. Ids without metadata miss → treated as non-reasoning.
   reasoningByKey: Record<string, boolean>
+  // Exact provider-advertised effort ladder for models such as Codex. Other
+  // providers fall back to Rowboat's standard low/medium/high ladder.
+  reasoningEffortsByKey: Record<string, string[]>
   // The effective runtime default (what a run actually uses when the user
   // hasn't picked a model) — shown in pickers instead of guessing from list
   // order, which can disagree with the real default.
@@ -49,6 +52,7 @@ export interface UseModelsResult extends ModelsSnapshot {
 const EMPTY_SNAPSHOT: ModelsSnapshot = {
   groups: [],
   reasoningByKey: {},
+  reasoningEffortsByKey: {},
   defaultModel: null,
   isRowboatConnected: false,
   catalogByProvider: {},
@@ -73,6 +77,7 @@ async function buildSnapshot(refreshProvider?: string): Promise<ModelsSnapshot> 
 
   const defaultModel: ModelRef | null = catalog.defaultModel
   const reasoningByKey: Record<string, boolean> = {}
+  const reasoningEffortsByKey: Record<string, string[]> = {}
   const catalogByProvider: Record<string, string[]> = {}
   const groups: ModelPickerGroup[] = []
 
@@ -82,6 +87,9 @@ async function buildSnapshot(refreshProvider?: string): Promise<ModelsSnapshot> 
     for (const m of p.models) {
       if (typeof m.reasoning === 'boolean') {
         reasoningByKey[`${p.id}/${m.id}`] = m.reasoning
+      }
+      if (Array.isArray(m.supportedReasoningEfforts) && m.supportedReasoningEfforts.length) {
+        reasoningEffortsByKey[`${p.id}/${m.id}`] = m.supportedReasoningEfforts
       }
     }
     groups.push({
@@ -111,6 +119,7 @@ async function buildSnapshot(refreshProvider?: string): Promise<ModelsSnapshot> 
   return {
     groups,
     reasoningByKey,
+    reasoningEffortsByKey,
     defaultModel,
     isRowboatConnected: catalog.providers.some((p) => p.id === 'rowboat'),
     catalogByProvider,
