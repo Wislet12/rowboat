@@ -88,6 +88,8 @@ const ipcSchemas = {
   'jarvis:getExecutionAuthority': {
     req: z.null(),
     res: z.object({
+      mode: z.enum(['jarvis_oauth', 'rowboat_hosted']),
+      available: z.boolean(),
       managed: z.boolean(),
       textProvider: z.enum(['codex_oauth', 'rowboat_configured']),
       voiceProvider: z.enum(['gpt-realtime-2.1', 'rowboat_configured']),
@@ -95,6 +97,34 @@ const ipcSchemas = {
       voiceOutput: z.enum(['pocket_tts', 'rowboat_configured']),
       rowboatBillingEnforced: z.boolean(),
     }),
+  },
+  'jarvis:setExecutionAuthority': {
+    req: z.object({
+      mode: z.enum(['jarvis_oauth', 'rowboat_hosted']),
+    }),
+    res: z.object({
+      mode: z.enum(['jarvis_oauth', 'rowboat_hosted']),
+      available: z.boolean(),
+      managed: z.boolean(),
+      textProvider: z.enum(['codex_oauth', 'rowboat_configured']),
+      voiceProvider: z.enum(['gpt-realtime-2.1', 'rowboat_configured']),
+      voiceAuthMode: z.enum(['chatgpt_oauth', 'rowboat_configured']),
+      voiceOutput: z.enum(['pocket_tts', 'rowboat_configured']),
+      rowboatBillingEnforced: z.boolean(),
+    }),
+  },
+  'jarvis:executionAuthorityChanged': {
+    req: z.object({
+      mode: z.enum(['jarvis_oauth', 'rowboat_hosted']),
+      available: z.boolean(),
+      managed: z.boolean(),
+      textProvider: z.enum(['codex_oauth', 'rowboat_configured']),
+      voiceProvider: z.enum(['gpt-realtime-2.1', 'rowboat_configured']),
+      voiceAuthMode: z.enum(['chatgpt_oauth', 'rowboat_configured']),
+      voiceOutput: z.enum(['pocket_tts', 'rowboat_configured']),
+      rowboatBillingEnforced: z.boolean(),
+    }),
+    res: z.null(),
   },
   'analytics:bootstrap': {
     req: z.null(),

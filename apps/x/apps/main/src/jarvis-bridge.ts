@@ -17,6 +17,10 @@ import {
   setJarvisExecutionProfile,
   type JarvisReasoningEffort,
 } from "./jarvis-execution-profile.js";
+import {
+  getJarvisExecutionAuthority,
+  setJarvisExecutionAuthority,
+} from "./jarvis-execution-authority.js";
 
 const PROTOCOL = "jarvis.rowboat.v1";
 const MAX_BODY_BYTES = 256 * 1024;
@@ -233,10 +237,11 @@ export async function startJarvisBridge({
         return;
       }
       if (method === "GET" && url.pathname === "/v1/status") {
+        const executionAuthority = getJarvisExecutionAuthority();
         const [auth, authSource, models] = await Promise.all([
           getChatGPTStatus(),
           getChatGPTAuthSource(),
-          codexModels().catch(() => []),
+          executionAuthority.managed ? codexModels().catch(() => []) : Promise.resolve([]),
         ]);
         writeJson(response, 200, {
           protocol: PROTOCOL,
@@ -248,14 +253,23 @@ export async function startJarvisBridge({
             accountId: auth.accountId || "",
           },
           models,
+          executionAuthority,
           executionProfile: getJarvisExecutionProfile(),
-          plan: {
-            source: "jarvis_codex_oauth",
-            label: "JARVIS Codex OAuth",
-            constrained: false,
-            billingEnforced: false,
-            detail: "The Codex OAuth provider calls the signed-in ChatGPT/Codex backend directly. Rowboat gateway plan and credit limits are not consulted.",
-          },
+          plan: executionAuthority.managed
+            ? {
+                source: "jarvis_codex_oauth",
+                label: "My JARVIS OAuth",
+                constrained: false,
+                billingEnforced: false,
+                detail: "Your Codex OAuth provider calls the signed-in ChatGPT/Codex backend directly. Rowboat gateway plan and credit limits are not consulted.",
+              }
+            : {
+                source: "rowboat_hosted",
+                label: "Rowboat hosted account",
+                constrained: true,
+                billingEnforced: true,
+                detail: "Rowboat-hosted execution is selected explicitly, so its account plan and credit limits apply.",
+              },
           features: [
             "local_markdown_knowledge_graph",
             "backlinked_brain",
@@ -284,6 +298,7 @@ export async function startJarvisBridge({
             "codex_model_selection",
             "codex_reasoning_effort_selection",
             "jarvis_codex_oauth_unmetered_by_rowboat",
+            "execution_authority_toggle",
             "optional_provider_profiles",
             "local_models",
           ],
@@ -297,7 +312,29 @@ export async function startJarvisBridge({
         writeJson(response, 200, { protocol: PROTOCOL, provider: "codex", models: await codexModels() });
         return;
       }
+      if (method === "POST" && url.pathname === "/v1/execution-authority") {
+        const body = await readJsonBody(request);
+        const requestedMode = String(body.mode || "").trim().toLowerCase();
+        if (requestedMode !== "jarvis_oauth" && requestedMode !== "rowboat_hosted") {
+          writeJson(response, 400, { protocol: PROTOCOL, error: "Execution authority must be jarvis_oauth or rowboat_hosted." });
+          return;
+        }
+        const executionAuthority = await setJarvisExecutionAuthority(requestedMode);
+        writeJson(response, 200, {
+          protocol: PROTOCOL,
+          status: "enforced",
+          executionAuthority,
+        });
+        return;
+      }
       if (method === "POST" && url.pathname === "/v1/execution-profile") {
+        if (!getJarvisExecutionAuthority().managed) {
+          writeJson(response, 409, {
+            protocol: PROTOCOL,
+            error: "Switch execution authority to My JARVIS OAuth before enforcing a Codex model profile.",
+          });
+          return;
+        }
         const body = await readJsonBody(request);
         const resolved = await resolveCodexExecutionProfile(
           String(body.model || "").trim(),
@@ -346,6 +383,13 @@ export async function startJarvisBridge({
         const requestedReasoning = String(body.reasoningEffort || "medium").trim().toLowerCase();
         if (!objective) {
           writeJson(response, 400, { protocol: PROTOCOL, error: "A Rowboat objective is required." });
+          return;
+        }
+        if (!getJarvisExecutionAuthority().managed) {
+          writeJson(response, 409, {
+            protocol: PROTOCOL,
+            error: "Rowboat delegation through JARVIS requires the My JARVIS OAuth authority toggle.",
+          });
           return;
         }
         const auth = await getChatGPTStatus();

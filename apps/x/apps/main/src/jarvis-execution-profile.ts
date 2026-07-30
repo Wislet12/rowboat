@@ -51,6 +51,10 @@ export function setJarvisExecutionProfile(
   return { ...selectedProfile };
 }
 
+export function clearJarvisExecutionProfile(): void {
+  selectedProfile = null;
+}
+
 /**
  * The native Rowboat composer can retain a per-tab selection. When Rowboat is
  * incorporated by JARVIS, the JARVIS chrome is authoritative: stamp its model

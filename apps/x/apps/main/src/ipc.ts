@@ -64,6 +64,12 @@ import {
   enforceJarvisExecutionProfile,
   getJarvisExecutionProfile,
 } from './jarvis-execution-profile.js';
+import {
+  enforceJarvisExecutionAuthority,
+  getJarvisExecutionAuthority,
+  setJarvisExecutionAuthority,
+  subscribeJarvisExecutionAuthority,
+} from './jarvis-execution-authority.js';
 import { triggerSync as triggerGranolaSync } from '@x/core/dist/knowledge/granola/sync.js';
 import { ISlackConfigRepo } from '@x/core/dist/slack/repo.js';
 import { IChannelsConfigRepo } from '@x/core/dist/channels/repo.js';
@@ -885,6 +891,10 @@ export function setupIpcHandlers() {
   // Relay backend-confirmed credit grants (first-time-action rewards) to all
   // windows so the UI can update balances and celebrate.
   subscribeCreditActivations((event) => broadcastToWindows('credits:didActivate', event));
+  subscribeJarvisExecutionAuthority((authority) => {
+    broadcastToWindows('jarvis:executionAuthorityChanged', authority);
+    broadcastToWindows('chatgpt:statusChanged', { signedIn: authority.managed });
+  });
 
   // Pre-warm the Gmail contact indices so the first compose-box keystroke is instant.
   // - warmContactIndex(): synchronous local-snapshot fallback (instant, narrow coverage).
@@ -899,18 +909,10 @@ export function setupIpcHandlers() {
       return getVersions();
     },
     'jarvis:getExecutionAuthority': async () => {
-      const managed = process.env.ROWBOAT_USE_CODEX_AUTH === 'true'
-        && process.env.ROWBOAT_JARVIS_CODEX_UNMETERED === 'true';
-      return {
-        managed,
-        textProvider: managed ? 'codex_oauth' as const : 'rowboat_configured' as const,
-        voiceProvider: managed ? 'gpt-realtime-2.1' as const : 'rowboat_configured' as const,
-        voiceAuthMode: managed ? 'chatgpt_oauth' as const : 'rowboat_configured' as const,
-        voiceOutput: managed ? 'pocket_tts' as const : 'rowboat_configured' as const,
-        // This controls Rowboat's hosted-plan surfaces only. Real provider
-        // transport errors remain visible as normal chat errors.
-        rowboatBillingEnforced: !managed,
-      };
+      return getJarvisExecutionAuthority();
+    },
+    'jarvis:setExecutionAuthority': async (_event, args) => {
+      return setJarvisExecutionAuthority(args.mode);
     },
     'app:consumePendingDeepLink': async () => {
       return { url: consumePendingDeepLink() };
@@ -1263,7 +1265,8 @@ export function setupIpcHandlers() {
       return container.resolve<ISessions>('sessions').getTurn(args.turnId);
     },
     'sessions:sendMessage': async (_event, args) => {
-      const config = enforceJarvisExecutionProfile(args.config);
+      const authorityConfig = await enforceJarvisExecutionAuthority(args.config);
+      const config = enforceJarvisExecutionProfile(authorityConfig);
       const result = await container.resolve<ISessions>('sessions').sendMessage(args.sessionId, args.input, config);
       const executionProfile = getJarvisExecutionProfile();
       if (executionProfile) {

@@ -12,6 +12,13 @@ export interface AppSettings {
      * re-registers on boot, so disabling it in System Settings sticks.
      */
     loginItemRegistered?: boolean;
+    /**
+     * Selects who is authoritative for AI execution. The JARVIS lane consumes
+     * the operator's own Codex/ChatGPT OAuth subscription and bypasses
+     * Rowboat-hosted billing. The hosted lane preserves upstream Rowboat
+     * account/provider behavior and is always an explicit opt-in.
+     */
+    rowboatExecutionAuthorityMode?: 'jarvis_oauth' | 'rowboat_hosted';
 }
 
 export function loadAppSettings(): AppSettings {

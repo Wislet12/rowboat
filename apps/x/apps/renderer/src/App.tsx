@@ -7551,14 +7551,14 @@ function App() {
                             recordingText={isActive ? voice.interimText : undefined}
                             recordingState={isActive ? (voice.state === 'submitting' ? 'stopping' : voice.state === 'connecting' ? 'connecting' : 'listening') : undefined}
                             audioLevelsRef={voice.audioLevelsRef}
-                            onStartRecording={isActive ? handleStartRecording : undefined}
-                            onSubmitRecording={isActive ? handleSubmitRecording : undefined}
-                            onCancelRecording={isActive ? handleCancelRecording : undefined}
-                            voiceAvailable={isActive && voiceAvailable}
+                            onStartRecording={isActive && !jarvisManaged ? handleStartRecording : undefined}
+                            onSubmitRecording={isActive && !jarvisManaged ? handleSubmitRecording : undefined}
+                            onCancelRecording={isActive && !jarvisManaged ? handleCancelRecording : undefined}
+                            voiceAvailable={isActive && !jarvisManaged && voiceAvailable}
                             inCall={inCall}
-                            onStartCall={isActive ? startCall : undefined}
+                            onStartCall={isActive && !jarvisManaged ? startCall : undefined}
                             onEndCall={isActive ? endCall : undefined}
-                            callAvailable={voiceAvailable && ttsAvailable}
+                            callAvailable={!jarvisManaged && voiceAvailable && ttsAvailable}
                           />
                         </div>
                       )
@@ -7583,7 +7583,7 @@ function App() {
                   session={activeCodeSession.session}
                   status={activeCodeSession.status}
                   onOpenDiff={setCodeDiffPath}
-                  voiceAvailable={voiceAvailable}
+                  voiceAvailable={!jarvisManaged && voiceAvailable}
                 />
               </ResizableRightPane>
             ) : isRightPaneContext && (
@@ -7670,14 +7670,14 @@ function App() {
                 recordingText={voice.interimText}
                 recordingState={voice.state === 'submitting' ? 'stopping' : voice.state === 'connecting' ? 'connecting' : 'listening'}
                 audioLevelsRef={voice.audioLevelsRef}
-                onStartRecording={handleStartRecording}
-                onSubmitRecording={handleSubmitRecording}
-                onCancelRecording={handleCancelRecording}
-                voiceAvailable={voiceAvailable}
+                onStartRecording={jarvisManaged ? undefined : handleStartRecording}
+                onSubmitRecording={jarvisManaged ? undefined : handleSubmitRecording}
+                onCancelRecording={jarvisManaged ? undefined : handleCancelRecording}
+                voiceAvailable={!jarvisManaged && voiceAvailable}
                 inCall={inCall}
-                onStartCall={startCall}
+                onStartCall={jarvisManaged ? undefined : startCall}
                 onEndCall={endCall}
-                callAvailable={voiceAvailable && ttsAvailable}
+                callAvailable={!jarvisManaged && voiceAvailable && ttsAvailable}
                 onComposioConnected={handleComposioConnected}
               />
             )}

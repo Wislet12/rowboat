@@ -15,12 +15,16 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import { Separator } from "@/components/ui/separator"
+import { Switch } from "@/components/ui/switch"
 import { useBilling } from "@/hooks/useBilling"
 import { useRowboatConfig } from "@/hooks/use-rowboat-config"
 import { CreditRewards } from "@/components/settings/credit-rewards"
 import { toast } from "sonner"
 import { getBillingPlanData, type BillingUsageBucket } from "@x/shared/dist/billing.js"
-import { useJarvisExecutionAuthority } from "@/hooks/use-jarvis-execution-authority"
+import {
+  setJarvisExecutionAuthority,
+  useJarvisExecutionAuthority,
+} from "@/hooks/use-jarvis-execution-authority"
 
 interface AccountSettingsProps {
   dialogOpen: boolean
@@ -58,6 +62,7 @@ export function AccountSettings({ dialogOpen }: AccountSettingsProps) {
   const [connectionLoading, setConnectionLoading] = useState(true)
   const [disconnecting, setDisconnecting] = useState(false)
   const [connecting, setConnecting] = useState(false)
+  const [authorityChanging, setAuthorityChanging] = useState(false)
   const appUrl = useRowboatConfig()?.appUrl ?? null
   const executionAuthority = useJarvisExecutionAuthority()
   const jarvisManaged = executionAuthority?.managed === true
@@ -138,6 +143,28 @@ export function AccountSettings({ dialogOpen }: AccountSettingsProps) {
     }
   }, [])
 
+  const handleAuthorityChange = useCallback(async (managed: boolean) => {
+    setAuthorityChanging(true)
+    try {
+      const next = await setJarvisExecutionAuthority(managed ? "jarvis_oauth" : "rowboat_hosted")
+      if (next.managed) {
+        toast.success("My JARVIS OAuth is now authoritative", {
+          description: "Codex/ChatGPT OAuth is active. Rowboat plan and credit limits are not used.",
+        })
+      } else {
+        toast.success("Rowboat hosted execution enabled", {
+          description: "Rowboat account billing now applies until you switch back.",
+        })
+      }
+    } catch (error) {
+      toast.error("Execution authority did not change", {
+        description: error instanceof Error ? error.message : String(error),
+      })
+    } finally {
+      setAuthorityChanging(false)
+    }
+  }, [])
+
   if (connectionLoading || !executionAuthority) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -146,9 +173,52 @@ export function AccountSettings({ dialogOpen }: AccountSettingsProps) {
     )
   }
 
+  const authorityControl = (
+    <div
+      className={`rounded-lg border p-4 ${
+        jarvisManaged
+          ? "border-emerald-500/30 bg-emerald-500/5"
+          : "border-amber-500/30 bg-amber-500/5"
+      }`}
+      data-testid="rowboat-execution-authority"
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0 space-y-1">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className={`size-4 ${jarvisManaged ? "text-emerald-500" : "text-amber-500"}`} />
+            <p className="text-sm font-medium">
+              {jarvisManaged ? "My JARVIS OAuth is authoritative" : "Rowboat hosted account is authoritative"}
+            </p>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {jarvisManaged
+              ? "Uses your existing Codex/ChatGPT OAuth subscription. No API key is required, and Rowboat Free/credit limits are bypassed."
+              : "Uses Rowboat-hosted models and its account plan. Switch this on to return to your own JARVIS OAuth subscription."}
+          </p>
+        </div>
+        <Switch
+          checked={jarvisManaged}
+          disabled={authorityChanging || (!executionAuthority.available && !jarvisManaged)}
+          onCheckedChange={(checked) => void handleAuthorityChange(checked)}
+          aria-label="Use my JARVIS OAuth subscription"
+          data-testid="rowboat-execution-authority-toggle"
+        />
+      </div>
+      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t pt-3 text-[11px] text-muted-foreground">
+        <span>On: Codex OAuth + JARVIS voice</span>
+        <span>Off: Rowboat hosted plan</span>
+        <span>BYOK and local models stay optional</span>
+      </div>
+    </div>
+  )
+
   if (jarvisManaged) {
     return (
       <div className="space-y-6">
+        {authorityControl}
+
+        <Separator />
+
         <div className="space-y-3">
           <div className="flex items-center gap-2">
             <ShieldCheck className="size-4 text-emerald-500" />
@@ -169,13 +239,18 @@ export function AccountSettings({ dialogOpen }: AccountSettingsProps) {
               </div>
               <div>
                 <p className="font-medium">Voice</p>
-                <p className="text-muted-foreground">GPT Realtime 2.1 · ChatGPT OAuth</p>
+                <p className="text-muted-foreground">Gemini 3.1 Flash or GPT Realtime 2.1 · JARVIS selector</p>
               </div>
               <div className="sm:col-span-2">
                 <p className="flex items-center gap-1.5 font-medium"><AudioLines className="size-3.5" /> Audible output</p>
                 <p className="text-muted-foreground">Pocket TTS cloned JARVIS voice</p>
               </div>
             </div>
+            <p className="border-t pt-3 text-xs text-muted-foreground">
+              Rowboat&apos;s original hosted phone and dictation controls are disabled in this mode so they cannot consume
+              Rowboat plan credits. Use the JARVIS voice controls above the workspace; the Voice Mode button uses GPT
+              Realtime 2.1 OAuth, while the global voice selector also offers Gemini 3.1 Flash.
+            </p>
           </div>
         </div>
 
@@ -209,24 +284,32 @@ export function AccountSettings({ dialogOpen }: AccountSettingsProps) {
 
   if (!isRowboatConnected) {
     return (
-      <div className="flex flex-col items-center justify-center py-12 gap-4">
-        <div className="flex size-14 items-center justify-center rounded-full bg-muted">
-          <User className="size-7 text-muted-foreground" />
+      <div className="space-y-6">
+        {authorityControl}
+        <Separator />
+        <div className="flex flex-col items-center justify-center py-8 gap-4">
+          <div className="flex size-14 items-center justify-center rounded-full bg-muted">
+            <User className="size-7 text-muted-foreground" />
+          </div>
+          <div className="text-center space-y-1">
+            <p className="text-sm font-medium">Not logged in to Rowboat</p>
+            <p className="text-xs text-muted-foreground">Log in only if you intentionally want Rowboat-hosted execution</p>
+          </div>
+          <Button onClick={handleConnect} disabled={connecting}>
+            {connecting ? <Loader2 className="size-4 animate-spin mr-2" /> : null}
+            Log in to Rowboat
+          </Button>
         </div>
-        <div className="text-center space-y-1">
-          <p className="text-sm font-medium">Not logged in</p>
-          <p className="text-xs text-muted-foreground">Log in to your Rowboat account to access premium features</p>
-        </div>
-        <Button onClick={handleConnect} disabled={connecting}>
-          {connecting ? <Loader2 className="size-4 animate-spin mr-2" /> : null}
-          Log in to Rowboat
-        </Button>
       </div>
     )
   }
 
   return (
     <div className="space-y-6">
+      {authorityControl}
+
+      <Separator />
+
       {/* Profile Section */}
       <div className="space-y-4">
         <div className="flex items-center gap-4">
