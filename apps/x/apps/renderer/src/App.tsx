@@ -143,6 +143,7 @@ import { playAckCue, playAlertCue } from '@/lib/call-sounds'
 import { useTheme } from '@/contexts/theme-context'
 import { TokenUsageMenu } from '@/components/token-usage-menu'
 import { useJarvisExecutionAuthority } from '@/hooks/use-jarvis-execution-authority'
+import { useJarvisManagedVoice } from '@/hooks/use-jarvis-managed-voice'
 
 type DirEntry = z.infer<typeof workspace.DirEntry>
 type RunEventType = z.infer<typeof RunEvent>
@@ -863,6 +864,7 @@ function App() {
   const { chatPanePlacement, chatPaneSize } = useTheme()
   const executionAuthority = useJarvisExecutionAuthority()
   const jarvisManaged = executionAuthority?.managed === true
+  const jarvisManagedVoice = useJarvisManagedVoice(jarvisManaged)
   const isChatPaneInMiddle = chatPanePlacement === 'middle'
 
   type ShortcutPane = 'left' | 'right'
@@ -1460,6 +1462,39 @@ function App() {
     inCallRef.current = false
     setInCall(false)
   }, [video, setPttState])
+
+  const previousJarvisManagedRef = useRef(jarvisManaged)
+  useEffect(() => {
+    const wasManaged = previousJarvisManagedRef.current
+    previousJarvisManagedRef.current = jarvisManaged
+    if (!wasManaged && jarvisManaged && inCallRef.current) endCall()
+  }, [endCall, jarvisManaged])
+
+  const startJarvisManagedCall = useCallback((_preset: CallPreset) => {
+    void jarvisManagedVoice.start().then((result) => {
+      if (result.accepted === false) {
+        toast.error(result.error || 'GPT Realtime 2.1 OAuth voice could not start.')
+        return
+      }
+      toast.message('Starting GPT Realtime 2.1 with ChatGPT OAuth · Pocket TTS output')
+    })
+  }, [jarvisManagedVoice.start])
+
+  const endJarvisManagedCall = useCallback(() => {
+    void jarvisManagedVoice.stop().then((result) => {
+      if (result.accepted === false) {
+        toast.error(result.error || 'The managed OAuth voice session could not stop.')
+      }
+    })
+  }, [jarvisManagedVoice.stop])
+
+  const lastManagedVoiceErrorRef = useRef('')
+  useEffect(() => {
+    if (!jarvisManaged || jarvisManagedVoice.status !== 'error' || !jarvisManagedVoice.error) return
+    if (lastManagedVoiceErrorRef.current === jarvisManagedVoice.error) return
+    lastManagedVoiceErrorRef.current = jarvisManagedVoice.error
+    toast.error(jarvisManagedVoice.error)
+  }, [jarvisManaged, jarvisManagedVoice.error, jarvisManagedVoice.status])
 
   // The user-mute half that lives in the video pipeline: stop sampling
   // camera/screen frames while muted (see useVideoMode.setCapturePaused).
@@ -7555,10 +7590,11 @@ function App() {
                             onSubmitRecording={isActive && !jarvisManaged ? handleSubmitRecording : undefined}
                             onCancelRecording={isActive && !jarvisManaged ? handleCancelRecording : undefined}
                             voiceAvailable={isActive && !jarvisManaged && voiceAvailable}
-                            inCall={inCall}
-                            onStartCall={isActive && !jarvisManaged ? startCall : undefined}
-                            onEndCall={isActive ? endCall : undefined}
-                            callAvailable={!jarvisManaged && voiceAvailable && ttsAvailable}
+                            inCall={jarvisManaged ? jarvisManagedVoice.active : inCall}
+                            onStartCall={isActive ? (jarvisManaged ? startJarvisManagedCall : startCall) : undefined}
+                            onEndCall={isActive ? (jarvisManaged ? endJarvisManagedCall : endCall) : undefined}
+                            callAvailable={jarvisManaged ? jarvisManagedVoice.supported : voiceAvailable && ttsAvailable}
+                            managedCall={jarvisManaged}
                           />
                         </div>
                       )
@@ -7674,10 +7710,11 @@ function App() {
                 onSubmitRecording={jarvisManaged ? undefined : handleSubmitRecording}
                 onCancelRecording={jarvisManaged ? undefined : handleCancelRecording}
                 voiceAvailable={!jarvisManaged && voiceAvailable}
-                inCall={inCall}
-                onStartCall={jarvisManaged ? undefined : startCall}
-                onEndCall={endCall}
-                callAvailable={!jarvisManaged && voiceAvailable && ttsAvailable}
+                inCall={jarvisManaged ? jarvisManagedVoice.active : inCall}
+                onStartCall={jarvisManaged ? startJarvisManagedCall : startCall}
+                onEndCall={jarvisManaged ? endJarvisManagedCall : endCall}
+                callAvailable={jarvisManaged ? jarvisManagedVoice.supported : voiceAvailable && ttsAvailable}
+                managedCall={jarvisManaged}
                 onComposioConnected={handleComposioConnected}
               />
             )}

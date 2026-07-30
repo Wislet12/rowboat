@@ -230,6 +230,8 @@ interface ChatInputInnerProps {
   onEndCall?: () => void
   /** Calls need both voice input (STT) and voice output (TTS) configured. */
   callAvailable?: boolean
+  /** The phone controls JARVIS GPT Realtime OAuth instead of Rowboat-hosted call presets. */
+  managedCall?: boolean
   /** Fired when the user picks a different model in the dropdown (only when no run exists yet). */
   onSelectedModelChange?: (model: SelectedModel | null) => void
   /**
@@ -272,6 +274,7 @@ function ChatInputInner({
   onStartCall,
   onEndCall,
   callAvailable,
+  managedCall,
   onSelectedModelChange,
   onReasoningEffortChange,
   workDir = null,
@@ -1189,7 +1192,15 @@ function ChatInputInner({
                         ? 'text-muted-foreground hover:bg-muted hover:text-foreground'
                         : 'cursor-default text-muted-foreground/40'
                   )}
-                  aria-label={inCall ? 'End call' : 'Start a call'}
+                  aria-label={
+                    inCall
+                      ? managedCall
+                        ? 'End GPT Realtime OAuth voice call'
+                        : 'End call'
+                      : managedCall
+                        ? 'Start GPT Realtime OAuth voice call'
+                        : 'Start a call'
+                  }
                 >
                   {inCall ? <PhoneOff className="h-4 w-4" /> : <Phone className="h-4 w-4" />}
                 </button>
@@ -1198,11 +1209,15 @@ function ChatInputInner({
                 {inCall
                   ? 'End call'
                   : callAvailable
-                    ? 'Start a call — it sees your screen while you talk it through'
-                    : 'Calls need voice input and output configured'}
+                    ? managedCall
+                      ? 'Start GPT Realtime 2.1 voice with ChatGPT OAuth · Pocket TTS output'
+                      : 'Start a call — it sees your screen while you talk it through'
+                    : managedCall
+                      ? 'The JARVIS GPT Realtime OAuth voice host is unavailable'
+                      : 'Calls need voice input and output configured'}
               </TooltipContent>
             </Tooltip>
-            {!inCall && (
+            {!inCall && !managedCall && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <button
@@ -1406,6 +1421,7 @@ export interface ChatInputWithMentionsProps {
   onStartCall?: (preset: CallPreset) => void
   onEndCall?: () => void
   callAvailable?: boolean
+  managedCall?: boolean
   onSelectedModelChange?: (model: SelectedModel | null) => void
   onReasoningEffortChange?: (effort: ReasoningEffortLevel | null) => void
   workDir?: string | null
@@ -1440,6 +1456,7 @@ export function ChatInputWithMentions({
   onStartCall,
   onEndCall,
   callAvailable,
+  managedCall,
   onSelectedModelChange,
   onReasoningEffortChange,
   workDir,
@@ -1471,6 +1488,7 @@ export function ChatInputWithMentions({
         onStartCall={onStartCall}
         onEndCall={onEndCall}
         callAvailable={callAvailable}
+        managedCall={managedCall}
         onSelectedModelChange={onSelectedModelChange}
         onReasoningEffortChange={onReasoningEffortChange}
         workDir={workDir}

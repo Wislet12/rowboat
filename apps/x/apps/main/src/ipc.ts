@@ -17,7 +17,7 @@ import { bus } from '@x/core/dist/runtime/legacy/bus.js';
 import { serviceBus } from '@x/core/dist/services/service_bus.js';
 import type { FSWatcher } from 'chokidar';
 import fs from 'node:fs/promises';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import z from 'zod';
 
@@ -70,6 +70,139 @@ import {
   setJarvisExecutionAuthority,
   subscribeJarvisExecutionAuthority,
 } from './jarvis-execution-authority.js';
+
+type JarvisManagedVoiceStatus = {
+  supported: boolean;
+  managed: boolean;
+  status: 'stopped' | 'starting' | 'listening' | 'thinking' | 'processing' | 'speaking' | 'error';
+  active: boolean;
+  provider: 'gpt-realtime-2.1';
+  authMode: 'chatgpt_oauth';
+  output: 'pocket_tts';
+  updatedAt: string;
+  error?: string;
+};
+
+const MANAGED_VOICE_STATUSES = new Set<JarvisManagedVoiceStatus['status']>([
+  'stopped',
+  'starting',
+  'listening',
+  'thinking',
+  'processing',
+  'speaking',
+  'error',
+]);
+
+function managedVoiceBaseStatus(overrides: Partial<JarvisManagedVoiceStatus> = {}): JarvisManagedVoiceStatus {
+  const authority = getJarvisExecutionAuthority();
+  return {
+    supported: false,
+    managed: authority.managed,
+    status: 'stopped',
+    active: false,
+    provider: 'gpt-realtime-2.1',
+    authMode: 'chatgpt_oauth',
+    output: 'pocket_tts',
+    updatedAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+async function managedVoiceHostExecutable(): Promise<string> {
+  const executable = String(process.env.JARVIS_IRIS_HOST_EXECUTABLE || '').trim();
+  if (!path.isAbsolute(executable)) return '';
+  try {
+    await fs.access(executable);
+    return executable;
+  } catch {
+    return '';
+  }
+}
+
+async function readJarvisManagedVoiceStatus(): Promise<JarvisManagedVoiceStatus> {
+  const authority = getJarvisExecutionAuthority();
+  const executable = await managedVoiceHostExecutable();
+  if (!authority.managed) return managedVoiceBaseStatus({ managed: false, supported: false });
+  if (!executable) {
+    return managedVoiceBaseStatus({
+      supported: false,
+      error: 'The JARVIS GPT Realtime voice host is unavailable.',
+    });
+  }
+  const statusFile = String(process.env.ROWBOAT_JARVIS_VOICE_STATUS_FILE || '').trim();
+  if (!path.isAbsolute(statusFile)) return managedVoiceBaseStatus({ supported: true });
+  try {
+    const parsed = JSON.parse(await fs.readFile(statusFile, 'utf8')) as Record<string, unknown>;
+    const status = MANAGED_VOICE_STATUSES.has(parsed.status as JarvisManagedVoiceStatus['status'])
+      ? parsed.status as JarvisManagedVoiceStatus['status']
+      : 'stopped';
+    return managedVoiceBaseStatus({
+      supported: true,
+      status,
+      active: parsed.active === true,
+      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date().toISOString(),
+      ...(typeof parsed.error === 'string' && parsed.error ? { error: parsed.error.slice(0, 700) } : {}),
+    });
+  } catch {
+    return managedVoiceBaseStatus({ supported: true });
+  }
+}
+
+async function requestJarvisManagedVoice(
+  action: 'start' | 'stop',
+): Promise<JarvisManagedVoiceStatus & { accepted: boolean }> {
+  const authority = getJarvisExecutionAuthority();
+  const current = await readJarvisManagedVoiceStatus();
+  if (action === 'start' && !authority.managed) {
+    return {
+      ...current,
+      accepted: false,
+      error: 'Switch on My OAuth before starting GPT Realtime 2.1 voice.',
+    };
+  }
+  const executable = await managedVoiceHostExecutable();
+  if (!executable) {
+    return {
+      ...current,
+      supported: false,
+      accepted: false,
+      status: 'error',
+      active: false,
+      error: 'The JARVIS GPT Realtime voice host is unavailable.',
+    };
+  }
+  try {
+    const childEnvironment = { ...process.env };
+    delete childEnvironment.ROWBOAT_JARVIS_BRIDGE_TOKEN;
+    delete childEnvironment.ROWBOAT_JARVIS_BRIDGE_DISCOVERY_FILE;
+    const child = spawn(executable, [`--rowboat-managed-voice=${action}`], {
+      cwd: path.dirname(executable),
+      detached: true,
+      windowsHide: true,
+      stdio: 'ignore',
+      env: childEnvironment,
+    });
+    child.unref();
+    return {
+      ...current,
+      supported: true,
+      managed: action === 'stop' ? authority.managed : true,
+      accepted: true,
+      status: action === 'start' ? 'starting' : 'stopped',
+      active: action === 'start',
+      updatedAt: new Date().toISOString(),
+      error: undefined,
+    };
+  } catch (error) {
+    return {
+      ...current,
+      accepted: false,
+      status: 'error',
+      active: false,
+      error: error instanceof Error ? error.message.slice(0, 700) : String(error).slice(0, 700),
+    };
+  }
+}
 import { triggerSync as triggerGranolaSync } from '@x/core/dist/knowledge/granola/sync.js';
 import { ISlackConfigRepo } from '@x/core/dist/slack/repo.js';
 import { IChannelsConfigRepo } from '@x/core/dist/channels/repo.js';
@@ -913,6 +1046,12 @@ export function setupIpcHandlers() {
     },
     'jarvis:setExecutionAuthority': async (_event, args) => {
       return setJarvisExecutionAuthority(args.mode);
+    },
+    'jarvis:getManagedVoiceStatus': async () => {
+      return readJarvisManagedVoiceStatus();
+    },
+    'jarvis:requestManagedVoice': async (_event, args) => {
+      return requestJarvisManagedVoice(args.action);
     },
     'app:consumePendingDeepLink': async () => {
       return { url: consumePendingDeepLink() };

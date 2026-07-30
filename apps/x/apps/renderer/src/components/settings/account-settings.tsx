@@ -239,7 +239,7 @@ export function AccountSettings({ dialogOpen }: AccountSettingsProps) {
               </div>
               <div>
                 <p className="font-medium">Voice</p>
-                <p className="text-muted-foreground">Gemini 3.1 Flash or GPT Realtime 2.1 · JARVIS selector</p>
+                <p className="text-muted-foreground">Chat phone: GPT Realtime 2.1 · ChatGPT OAuth</p>
               </div>
               <div className="sm:col-span-2">
                 <p className="flex items-center gap-1.5 font-medium"><AudioLines className="size-3.5" /> Audible output</p>
@@ -247,9 +247,10 @@ export function AccountSettings({ dialogOpen }: AccountSettingsProps) {
               </div>
             </div>
             <p className="border-t pt-3 text-xs text-muted-foreground">
-              Rowboat&apos;s original hosted phone and dictation controls are disabled in this mode so they cannot consume
-              Rowboat plan credits. Use the JARVIS voice controls above the workspace; the Voice Mode button uses GPT
-              Realtime 2.1 OAuth, while the global voice selector also offers Gemini 3.1 Flash.
+              The phone stays available in every Rowboat chat. In My OAuth mode it starts your independent GPT Realtime
+              2.1 ChatGPT OAuth session and speaks through Pocket TTS, without consulting Rowboat credits. Rowboat Hosted
+              mode keeps the original hosted phone engine. The separate JARVIS voice layer above the workspace also keeps
+              Gemini 3.1 Flash available.
             </p>
           </div>
         </div>

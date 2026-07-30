@@ -76,6 +76,18 @@ const UpdaterStatusSchema = z.object({
   lastCheckedAt: z.number().optional(),
 });
 
+const JarvisManagedVoiceStatusSchema = z.object({
+  supported: z.boolean(),
+  managed: z.boolean(),
+  status: z.enum(['stopped', 'starting', 'listening', 'thinking', 'processing', 'speaking', 'error']),
+  active: z.boolean(),
+  provider: z.literal('gpt-realtime-2.1'),
+  authMode: z.literal('chatgpt_oauth'),
+  output: z.literal('pocket_tts'),
+  updatedAt: z.string(),
+  error: z.string().optional(),
+});
+
 const ipcSchemas = {
   'app:getVersions': {
     req: z.null(),
@@ -111,6 +123,18 @@ const ipcSchemas = {
       voiceAuthMode: z.enum(['chatgpt_oauth', 'rowboat_configured']),
       voiceOutput: z.enum(['pocket_tts', 'rowboat_configured']),
       rowboatBillingEnforced: z.boolean(),
+    }),
+  },
+  'jarvis:getManagedVoiceStatus': {
+    req: z.null(),
+    res: JarvisManagedVoiceStatusSchema,
+  },
+  'jarvis:requestManagedVoice': {
+    req: z.object({
+      action: z.enum(['start', 'stop']),
+    }),
+    res: JarvisManagedVoiceStatusSchema.extend({
+      accepted: z.boolean(),
     }),
   },
   'jarvis:executionAuthorityChanged': {
