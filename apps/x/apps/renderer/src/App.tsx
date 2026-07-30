@@ -142,6 +142,7 @@ import * as analytics from '@/lib/analytics'
 import { playAckCue, playAlertCue } from '@/lib/call-sounds'
 import { useTheme } from '@/contexts/theme-context'
 import { TokenUsageMenu } from '@/components/token-usage-menu'
+import { useJarvisExecutionAuthority } from '@/hooks/use-jarvis-execution-authority'
 
 type DirEntry = z.infer<typeof workspace.DirEntry>
 type RunEventType = z.infer<typeof RunEvent>
@@ -860,6 +861,8 @@ function ContentHeader({
 
 function App() {
   const { chatPanePlacement, chatPaneSize } = useTheme()
+  const executionAuthority = useJarvisExecutionAuthority()
+  const jarvisManaged = executionAuthority?.managed === true
   const isChatPaneInMiddle = chatPanePlacement === 'middle'
 
   type ShortcutPane = 'left' | 'right'
@@ -998,6 +1001,12 @@ function App() {
   // (out of credits, subscription lapsed) always pop the upgrade dialog.
   const billingWatchedConversation = sessionChat.chatState?.conversation ?? conversation
   useEffect(() => {
+    if (!executionAuthority) return
+    if (jarvisManaged) {
+      setBillingErrorOpen(false)
+      setBillingErrorMatch(null)
+      return
+    }
     for (let i = billingWatchedConversation.length - 1; i >= 0; i--) {
       const item = billingWatchedConversation[i]
       if (!isErrorMessage(item)) continue
@@ -1011,7 +1020,7 @@ function App() {
       }
       return
     }
-  }, [billingWatchedConversation])
+  }, [billingWatchedConversation, executionAuthority, jarvisManaged])
   const runIdRef = useRef<string | null>(null)
   const loadRunRequestIdRef = useRef(0)
   const [isProcessing, setIsProcessing] = useState(false)
@@ -3335,13 +3344,13 @@ function App() {
           message: event.error,
           timestamp: Date.now(),
         }])
-        if (!matchBillingError(event.error)) {
+        if (jarvisManaged || !matchBillingError(event.error)) {
           toast.error(event.error.split('\n')[0] || 'Model error')
         }
         console.error('Run error:', event.error)
         break
     }
-  }, [appendStreamingBuffer, clearStreamingBuffer, loadRuns])
+  }, [appendStreamingBuffer, clearStreamingBuffer, jarvisManaged, loadRuns])
 
   // Listen to run events - use refs/callbacks to avoid stale closure issues.
   useEffect(() => {
@@ -6668,7 +6677,7 @@ function App() {
     }
 
     if (isErrorMessage(item)) {
-      const billingMatch = matchBillingError(item.message)
+      const billingMatch = jarvisManaged ? null : matchBillingError(item.message)
       if (billingMatch) {
         return <BillingErrorNotice key={item.id} id={item.id} match={billingMatch} />
       }
@@ -7735,12 +7744,14 @@ function App() {
       </SidebarSectionProvider>
       <Toaster />
       <UpdateCard />
-      <CreditCelebration />
-      <BillingErrorDialog
-        open={billingErrorOpen}
-        match={billingErrorMatch}
-        onOpenChange={setBillingErrorOpen}
-      />
+      {!jarvisManaged ? <CreditCelebration /> : null}
+      {!jarvisManaged ? (
+        <BillingErrorDialog
+          open={billingErrorOpen}
+          match={billingErrorMatch}
+          onOpenChange={setBillingErrorOpen}
+        />
+      ) : null}
       <OnboardingModal
         open={showOnboarding}
         onComplete={handleOnboardingComplete}

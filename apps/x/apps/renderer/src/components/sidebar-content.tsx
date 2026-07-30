@@ -92,6 +92,7 @@ import { toast } from "@/lib/toast"
 import { getBillingPlanData } from "@x/shared/dist/billing.js"
 import { ServiceEvent } from "@x/shared/src/service-events.js"
 import z from "zod"
+import { useJarvisExecutionAuthority } from "@/hooks/use-jarvis-execution-authority"
 
 interface TreeNode {
   path: string
@@ -479,7 +480,11 @@ export function SidebarContentPanel({
   const creditPopoverAutoShownRef = useRef(false)
   const [loggingIn, setLoggingIn] = useState(false)
   const appUrl = useRowboatConfig()?.appUrl ?? null
-  const { billing, refresh: refreshBilling } = useBilling(isRowboatConnected)
+  const executionAuthority = useJarvisExecutionAuthority()
+  const jarvisManaged = executionAuthority?.managed === true
+  const { billing, refresh: refreshBilling } = useBilling(
+    isRowboatConnected && executionAuthority?.rowboatBillingEnforced === true,
+  )
   const currentBillingPlan = billing ? getBillingPlanData(billing.catalog, billing.subscriptionPlanId) : null
 
   // Nav previews: unread important emails + next upcoming meetings (top 2 each).
@@ -759,16 +764,22 @@ export function SidebarContentPanel({
 
   // Re-anchor the warning whenever billing (re)loads — billing is authoritative.
   useEffect(() => {
+    if (jarvisManaged) {
+      outOfCreditsRef.current = false
+      setOutOfCredits(false)
+      return
+    }
     if (billing) {
       const next = isOutOfCredits(billing)
       outOfCreditsRef.current = next
       setOutOfCredits(next)
     }
-  }, [billing])
+  }, [billing, jarvisManaged])
 
   // Live signals: a usage API error flips it on; a successful cost-incurring
   // call flips it off and triggers a single billing refresh to reconcile.
   useEffect(() => {
+    if (jarvisManaged) return
     const onExhausted = () => {
       outOfCreditsRef.current = true
       setOutOfCredits(true)
@@ -785,7 +796,7 @@ export function SidebarContentPanel({
       window.removeEventListener(CREDIT_EXHAUSTED_EVENT, onExhausted)
       window.removeEventListener(CREDIT_REPLENISHED_EVENT, onReplenished)
     }
-  }, [refreshBilling])
+  }, [jarvisManaged, refreshBilling])
 
   // Auto-open the popover the first time we go out of credits; reset when
   // credits return so it can auto-open again on a future episode.
@@ -1188,15 +1199,27 @@ export function SidebarContentPanel({
         </AlertDialog>
       </SidebarContent>
       {/* First-time-action credit rewards (feature-flagged, signed-in only) */}
-      <SidebarCreditRewards
-        onOpenEmail={onOpenEmail}
-        onOpenMeetings={onOpenMeetings}
-        onOpenAgents={onOpenBgTasks}
-        onOpenApps={onOpenApps}
-        onConnectAccounts={() => setConnectionsSettingsOpen(true)}
-      />
+      {!jarvisManaged ? (
+        <SidebarCreditRewards
+          onOpenEmail={onOpenEmail}
+          onOpenMeetings={onOpenMeetings}
+          onOpenAgents={onOpenBgTasks}
+          onOpenApps={onOpenApps}
+          onConnectAccounts={() => setConnectionsSettingsOpen(true)}
+        />
+      ) : null}
       {/* Billing / upgrade CTA or Log in CTA */}
-      {isRowboatConnected && billing ? (() => {
+      {jarvisManaged ? (
+        <div className="px-3 py-2">
+          <div className="flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3 py-2">
+            <Bot className="size-4 shrink-0 text-emerald-500" />
+            <div className="min-w-0">
+              <span className="text-xs font-medium text-sidebar-foreground">Codex OAuth</span>
+              <p className="text-[10px] text-sidebar-foreground/60">Rowboat plan not used</p>
+            </div>
+          </div>
+        </div>
+      ) : isRowboatConnected && billing ? (() => {
         const upgradeLabel = !billing.subscriptionPlanId || currentBillingPlan?.category === 'free' || currentBillingPlan?.category === 'starter' ? 'Upgrade' : 'Manage'
         if (outOfCredits) {
           return (
@@ -1280,7 +1303,7 @@ export function SidebarContentPanel({
         )
       })() : null}
       {/* Sign in CTA */}
-      {!isRowboatConnected && (
+      {!jarvisManaged && !isRowboatConnected && (
         <div className="px-3 py-2">
           <button
             onClick={handleRowboatLogin}

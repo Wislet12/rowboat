@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useCallback } from "react"
-import { Loader2, User, CreditCard, LogOut, ExternalLink } from "lucide-react"
+import { AudioLines, Loader2, User, CreditCard, LogOut, ExternalLink, ShieldCheck } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   AlertDialog,
@@ -20,6 +20,7 @@ import { useRowboatConfig } from "@/hooks/use-rowboat-config"
 import { CreditRewards } from "@/components/settings/credit-rewards"
 import { toast } from "sonner"
 import { getBillingPlanData, type BillingUsageBucket } from "@x/shared/dist/billing.js"
+import { useJarvisExecutionAuthority } from "@/hooks/use-jarvis-execution-authority"
 
 interface AccountSettingsProps {
   dialogOpen: boolean
@@ -58,7 +59,11 @@ export function AccountSettings({ dialogOpen }: AccountSettingsProps) {
   const [disconnecting, setDisconnecting] = useState(false)
   const [connecting, setConnecting] = useState(false)
   const appUrl = useRowboatConfig()?.appUrl ?? null
-  const { billing, isLoading: billingLoading, refresh: refreshBilling } = useBilling(isRowboatConnected)
+  const executionAuthority = useJarvisExecutionAuthority()
+  const jarvisManaged = executionAuthority?.managed === true
+  const { billing, isLoading: billingLoading, refresh: refreshBilling } = useBilling(
+    isRowboatConnected && executionAuthority?.rowboatBillingEnforced === true,
+  )
   const currentPlan = billing ? getBillingPlanData(billing.catalog, billing.subscriptionPlanId) : null
   const hasPaidSubscription = currentPlan?.category === 'starter' || currentPlan?.category === 'pro'
 
@@ -98,9 +103,9 @@ export function AccountSettings({ dialogOpen }: AccountSettingsProps) {
   // Earn-credits section shows the updated number while the dialog is open.
   useEffect(() => {
     return window.ipc.on('credits:didActivate', () => {
-      refreshBilling()
+      if (!jarvisManaged) refreshBilling()
     })
-  }, [refreshBilling])
+  }, [jarvisManaged, refreshBilling])
 
   const handleConnect = useCallback(async () => {
     try {
@@ -133,10 +138,71 @@ export function AccountSettings({ dialogOpen }: AccountSettingsProps) {
     }
   }, [])
 
-  if (connectionLoading) {
+  if (connectionLoading || !executionAuthority) {
     return (
       <div className="flex items-center justify-center py-12">
         <Loader2 className="size-5 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  if (jarvisManaged) {
+    return (
+      <div className="space-y-6">
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="size-4 text-emerald-500" />
+            <h4 className="text-sm font-medium">JARVIS-managed execution</h4>
+          </div>
+          <div className="space-y-4 rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-4">
+            <div>
+              <p className="text-sm font-medium">Codex OAuth · Rowboat plan not used</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Text chat runs through the existing JARVIS Codex OAuth account. Rowboat&apos;s hosted
+                Free, Starter, Pro, credit, and upgrade limits are not consulted for this execution lane.
+              </p>
+            </div>
+            <div className="grid gap-2 border-t pt-3 text-xs sm:grid-cols-2">
+              <div>
+                <p className="font-medium">Text</p>
+                <p className="text-muted-foreground">Codex OAuth</p>
+              </div>
+              <div>
+                <p className="font-medium">Voice</p>
+                <p className="text-muted-foreground">GPT Realtime 2.1 · ChatGPT OAuth</p>
+              </div>
+              <div className="sm:col-span-2">
+                <p className="flex items-center gap-1.5 font-medium"><AudioLines className="size-3.5" /> Audible output</p>
+                <p className="text-muted-foreground">Pocket TTS cloned JARVIS voice</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <Separator />
+
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <User className="size-4 text-muted-foreground" />
+            <h4 className="text-sm font-medium">Optional Rowboat cloud account</h4>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {isRowboatConnected
+              ? "Connected for Rowboat-hosted sync features. It does not control JARVIS text or voice execution."
+              : "Connect only if you want optional Rowboat-hosted sync features. No API key is required for JARVIS text or voice."}
+          </p>
+          {isRowboatConnected ? (
+            <Button variant="outline" size="sm" onClick={handleDisconnect} disabled={disconnecting}>
+              {disconnecting ? <Loader2 className="mr-2 size-4 animate-spin" /> : <LogOut className="mr-2 size-4" />}
+              Disconnect optional account
+            </Button>
+          ) : (
+            <Button variant="outline" size="sm" onClick={handleConnect} disabled={connecting}>
+              {connecting ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
+              Connect optional account
+            </Button>
+          )}
+        </div>
       </div>
     )
   }

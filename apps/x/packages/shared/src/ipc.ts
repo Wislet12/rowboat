@@ -85,6 +85,17 @@ const ipcSchemas = {
       electron: z.string(),
     }),
   },
+  'jarvis:getExecutionAuthority': {
+    req: z.null(),
+    res: z.object({
+      managed: z.boolean(),
+      textProvider: z.enum(['codex_oauth', 'rowboat_configured']),
+      voiceProvider: z.enum(['gpt-realtime-2.1', 'rowboat_configured']),
+      voiceAuthMode: z.enum(['chatgpt_oauth', 'rowboat_configured']),
+      voiceOutput: z.enum(['pocket_tts', 'rowboat_configured']),
+      rowboatBillingEnforced: z.boolean(),
+    }),
+  },
   'analytics:bootstrap': {
     req: z.null(),
     res: z.object({

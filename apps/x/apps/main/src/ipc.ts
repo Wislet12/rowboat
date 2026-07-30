@@ -898,6 +898,20 @@ export function setupIpcHandlers() {
       // args is null for this channel (no request payload)
       return getVersions();
     },
+    'jarvis:getExecutionAuthority': async () => {
+      const managed = process.env.ROWBOAT_USE_CODEX_AUTH === 'true'
+        && process.env.ROWBOAT_JARVIS_CODEX_UNMETERED === 'true';
+      return {
+        managed,
+        textProvider: managed ? 'codex_oauth' as const : 'rowboat_configured' as const,
+        voiceProvider: managed ? 'gpt-realtime-2.1' as const : 'rowboat_configured' as const,
+        voiceAuthMode: managed ? 'chatgpt_oauth' as const : 'rowboat_configured' as const,
+        voiceOutput: managed ? 'pocket_tts' as const : 'rowboat_configured' as const,
+        // This controls Rowboat's hosted-plan surfaces only. Real provider
+        // transport errors remain visible as normal chat errors.
+        rowboatBillingEnforced: !managed,
+      };
+    },
     'app:consumePendingDeepLink': async () => {
       return { url: consumePendingDeepLink() };
     },
