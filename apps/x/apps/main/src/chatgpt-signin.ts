@@ -3,6 +3,11 @@ import type { Server } from 'http';
 import { createAuthServer } from './auth-server.js';
 import * as oauthClient from '@x/core/dist/auth/oauth-client.js';
 import { exchangeChatGPTCode, getChatGPTStatus } from '@x/core/dist/auth/chatgpt-auth.js';
+import {
+  beginRealtimeChatGPTAuthorization,
+  exchangeRealtimeChatGPTCode,
+  getRealtimeChatGPTStatus,
+} from '@x/core/dist/auth/realtime-chatgpt-auth.js';
 import { applyCodexInitialSelection } from '@x/core/dist/models/chatgpt-selection.js';
 import {
   CHATGPT_AUTHORIZE_URL,
@@ -34,6 +39,7 @@ export type ChatGPTSignInResult = {
 const SIGN_IN_TIMEOUT_MS = 5 * 60 * 1000;
 
 type ActiveAttempt = {
+  purpose: 'text' | 'realtime_voice';
   promise: Promise<ChatGPTSignInResult>;
   /**
    * Settle the attempt with a cancelled outcome. Resolves once the loopback
@@ -54,6 +60,17 @@ let activeAttempt: ActiveAttempt | null = null;
  * one-server-at-a-time invariant: 1455 is fully released before rebinding.
  */
 export async function signInWithChatGPT(): Promise<ChatGPTSignInResult> {
+  return signInForPurpose('text');
+}
+
+/** Separate local ChatGPT OAuth grant used only for Rowboat-owned Realtime voice. */
+export async function signInWithRealtimeVoice(): Promise<ChatGPTSignInResult> {
+  return signInForPurpose('realtime_voice');
+}
+
+async function signInForPurpose(
+  purpose: 'text' | 'realtime_voice',
+): Promise<ChatGPTSignInResult> {
   if (activeAttempt) {
     const stale = activeAttempt;
     activeAttempt = null;
@@ -61,13 +78,13 @@ export async function signInWithChatGPT(): Promise<ChatGPTSignInResult> {
     await stale.cancel('Superseded by a new sign-in attempt.');
   }
 
-  const attempt = startAttempt();
+  const attempt = startAttempt(purpose);
   activeAttempt = attempt;
   void attempt.promise.finally(() => {
     if (activeAttempt === attempt) activeAttempt = null;
   });
   const result = await attempt.promise;
-  if (result.signedIn) {
+  if (result.signedIn && purpose === 'text') {
     // Signing in connects the codex provider: if no assistant model is
     // saved yet, pick the initial one (recommendation if the subscription
     // lists it, else first listed). Never replaces a saved choice.
@@ -85,9 +102,16 @@ export async function signInWithChatGPT(): Promise<ChatGPTSignInResult> {
  */
 export async function cancelChatGPTSignIn(): Promise<void> {
   const attempt = activeAttempt;
-  if (!attempt) return;
+  if (!attempt || attempt.purpose !== 'text') return;
   activeAttempt = null;
   await attempt.cancel('Sign-in cancelled.');
+}
+
+export async function cancelRealtimeVoiceSignIn(): Promise<void> {
+  const attempt = activeAttempt;
+  if (!attempt || attempt.purpose !== 'realtime_voice') return;
+  activeAttempt = null;
+  await attempt.cancel('Voice sign-in cancelled.');
 }
 
 /**
@@ -96,7 +120,7 @@ export async function cancelChatGPTSignIn(): Promise<void> {
  * failure, cancellation — tears down the loopback server and the timeout
  * exactly once via the settle-once `finish`.
  */
-function startAttempt(): ActiveAttempt {
+function startAttempt(purpose: 'text' | 'realtime_voice'): ActiveAttempt {
   let settle!: (result: ChatGPTSignInResult) => void;
   const promise = new Promise<ChatGPTSignInResult>((resolve) => {
     settle = resolve;
@@ -106,6 +130,10 @@ function startAttempt(): ActiveAttempt {
   let server: Server | null = null;
   let timeoutHandle: NodeJS.Timeout | null = null;
   let serverClosed: Promise<void> | null = null;
+  const exchangeAbort = new AbortController();
+  const realtimeAuthEpoch = purpose === 'realtime_voice'
+    ? beginRealtimeChatGPTAuthorization()
+    : 0;
 
   // Close the listening socket AND any keep-alive connections (the browser
   // holds one open after the callback response) so 1455 frees immediately.
@@ -125,6 +153,7 @@ function startAttempt(): ActiveAttempt {
   const finish = (result: ChatGPTSignInResult): Promise<void> => {
     if (settled) return serverClosed ?? Promise.resolve();
     settled = true;
+    if (!result.signedIn) exchangeAbort.abort();
     if (timeoutHandle) clearTimeout(timeoutHandle);
     const closed = closeServer();
     if (!result.signedIn) {
@@ -138,10 +167,10 @@ function startAttempt(): ActiveAttempt {
     finish({ signedIn: false, cancelled: true, error: reason });
 
   void run();
-  return { promise, cancel };
+  return { purpose, promise, cancel };
 
   async function run(): Promise<void> {
-    console.log('[ChatGPTAuth] Starting sign-in flow...');
+    console.log(`[ChatGPTAuth] Starting ${purpose === 'realtime_voice' ? 'Realtime voice' : 'text'} sign-in flow...`);
     try {
       const { verifier, challenge } = await oauthClient.generatePKCE();
       const state = oauthClient.generateState();
@@ -160,9 +189,21 @@ function startAttempt(): ActiveAttempt {
             return;
           }
           // Exchange + persistence live in core (never log token values).
-          await exchangeChatGPTCode(code, verifier);
-          const status = await getChatGPTStatus();
-          console.log('[ChatGPTAuth] Sign-in complete');
+          if (purpose === 'realtime_voice') {
+            await exchangeRealtimeChatGPTCode(
+              code,
+              verifier,
+              realtimeAuthEpoch,
+              exchangeAbort.signal,
+            );
+          } else {
+            await exchangeChatGPTCode(code, verifier);
+          }
+          if (settled) return;
+          const status = purpose === 'realtime_voice'
+            ? await getRealtimeChatGPTStatus()
+            : await getChatGPTStatus();
+          console.log(`[ChatGPTAuth] ${purpose === 'realtime_voice' ? 'Realtime voice' : 'Text'} sign-in complete`);
           void finish({ ...status });
         } catch (error) {
           console.error('[ChatGPTAuth] Token exchange failed:', error);

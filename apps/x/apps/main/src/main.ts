@@ -20,6 +20,7 @@ import { disposeAllTerminals } from "./terminal.js";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname } from "node:path";
 import { initUpdater } from "./updater.js";
+import { rowboatRealtimeVoiceBroker } from "./rowboat-realtime-voice.js";
 import { init as initGmailSync } from "@x/core/dist/knowledge/sync_gmail.js";
 import { init as initCalendarSync } from "@x/core/dist/knowledge/sync_calendar.js";
 import { init as initFirefliesSync } from "@x/core/dist/knowledge/sync_fireflies.js";
@@ -42,6 +43,7 @@ import { init as initAppsServer, shutdown as shutdownAppsServer } from "@x/core/
 import { registerAppsHostApi } from "@x/core/dist/apps/host-api.js";
 import { setTokenCipher as setGithubTokenCipher } from "@x/core/dist/apps/github-auth.js";
 import { getChatGPTStatus, setTokenCipher as setChatGPTTokenCipher } from "@x/core/dist/auth/chatgpt-auth.js";
+import { setRealtimeTokenCipher } from "@x/core/dist/auth/realtime-chatgpt-auth.js";
 import { applyCodexInitialSelection } from "@x/core/dist/models/chatgpt-selection.js";
 import { shutdown as shutdownAnalytics } from "@x/core/dist/analytics/posthog.js";
 import { identifyIfSignedIn } from "@x/core/dist/analytics/identify.js";
@@ -517,10 +519,19 @@ function createWindow(options: { startHidden?: boolean } = {}) {
   configureSessionPermissions(session.fromPartition(BROWSER_PARTITION), BROWSER_EXTRA_PERMISSIONS);
 
   mainWindow = win;
+  const primaryVoiceSenderId = win.webContents.id;
+  rowboatRealtimeVoiceBroker.setPrimarySender(primaryVoiceSenderId);
   setMainWindowForDeepLinks(win);
   win.on("closed", () => {
+    rowboatRealtimeVoiceBroker.stopForWebContents(primaryVoiceSenderId);
     if (mainWindow === win) mainWindow = null;
     setMainWindowForDeepLinks(null);
+  });
+  win.webContents.on("did-start-navigation", (_event, _url, _isInPlace, isMainFrame) => {
+    if (isMainFrame) rowboatRealtimeVoiceBroker.stopAll();
+  });
+  win.webContents.on("did-finish-load", () => {
+    rowboatRealtimeVoiceBroker.setPrimarySender(primaryVoiceSenderId);
   });
 
   // Show window when content is ready to prevent blank screen.
@@ -591,6 +602,7 @@ function createWindow(options: { startHidden?: boolean } = {}) {
 // window or an app iframe just goes blank). Log the reason so crash reports
 // can be correlated with what Chromium thought happened.
 app.on('render-process-gone', (_event, webContents, details) => {
+  rowboatRealtimeVoiceBroker.stopForWebContents(webContents.id);
   console.error(`[Crash] renderer gone: reason=${details.reason} exitCode=${details.exitCode} url=${webContents.getURL()}`);
 });
 app.on('child-process-gone', (_event, details) => {
@@ -663,6 +675,13 @@ app.whenReady().then(async () => {
   });
   // ChatGPT subscription tokens at rest: same keychain-backed cipher.
   setChatGPTTokenCipher({
+    isAvailable: () => safeStorage.isEncryptionAvailable(),
+    encrypt: (plain) => safeStorage.encryptString(plain).toString('base64'),
+    decrypt: (encrypted) => safeStorage.decryptString(Buffer.from(encrypted, 'base64')),
+  });
+  // Voice uses an independent Rowboat-local ChatGPT OAuth grant. Reuse only
+  // the OS encryption primitive; never reuse the Codex text credential.
+  setRealtimeTokenCipher({
     isAvailable: () => safeStorage.isEncryptionAvailable(),
     encrypt: (plain) => safeStorage.encryptString(plain).toString('base64'),
     decrypt: (encrypted) => safeStorage.decryptString(Buffer.from(encrypted, 'base64')),
@@ -911,6 +930,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  rowboatRealtimeVoiceBroker.stopAll();
   // Clean up watcher on app quit
   stopWorkspaceWatcher();
   stopRunsWatcher();

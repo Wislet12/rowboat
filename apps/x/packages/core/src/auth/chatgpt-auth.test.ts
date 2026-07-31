@@ -26,6 +26,10 @@ const {
     CHATGPT_AUTH_CLAIM_NAMESPACE,
     CHATGPT_PROFILE_CLAIM_NAMESPACE,
 } = await import('./chatgpt-constants.js');
+// signOutChatGPT lazily imports this module after clearing credentials. Warm it
+// before the suite enables fake timers so Vite's first-load module work cannot
+// be suspended by the test clock.
+await import('../models/chatgpt-selection.js');
 
 const AUTH_FILE = path.join(tmpWorkDir, 'config', 'chatgpt-auth.json');
 

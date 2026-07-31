@@ -11,6 +11,9 @@ import { MarkdownEditor, type MarkdownEditorHandle } from './components/markdown
 import { ChatSidebar } from './components/chat-sidebar';
 import { useSessionChat } from '@/hooks/useSessionChat';
 import { subscribeSessionFeed } from '@/lib/session-chat/feed';
+import { ipcSessionsClient } from '@/lib/session-chat/client';
+import { runRowboatRealtimeDelegation } from '@/lib/rowboat-realtime-delegation';
+import type { RowboatRealtimeDelegation } from '@/lib/rowboat-realtime-webrtc';
 import { ChatHeader } from './components/chat-header';
 import { ChatEmptyState } from './components/chat-empty-state';
 import { ChatInputWithMentions, type CallPreset, type PermissionMode, type StagedAttachment } from './components/chat-input-with-mentions';
@@ -143,7 +146,7 @@ import { playAckCue, playAlertCue } from '@/lib/call-sounds'
 import { useTheme } from '@/contexts/theme-context'
 import { TokenUsageMenu } from '@/components/token-usage-menu'
 import { useJarvisExecutionAuthority } from '@/hooks/use-jarvis-execution-authority'
-import { useJarvisManagedVoice } from '@/hooks/use-jarvis-managed-voice'
+import { useRowboatRealtimeVoice } from '@/hooks/use-rowboat-realtime-voice'
 
 type DirEntry = z.infer<typeof workspace.DirEntry>
 type RunEventType = z.infer<typeof RunEvent>
@@ -229,6 +232,24 @@ function toSpeakableText(markdown: string): string {
   const cut = text.slice(0, 700)
   const lastStop = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? '))
   return lastStop > 200 ? cut.slice(0, lastStop + 1) : cut
+}
+
+function mergeRealtimeVoiceTranscript(
+  conversation: ConversationItem[],
+  overlay: ChatMessage[],
+): ConversationItem[] {
+  if (overlay.length === 0) return conversation
+  const additions = overlay.filter((voiceItem) => !conversation.some((item) => (
+    isChatMessage(item)
+    && item.role === voiceItem.role
+    && item.content.trim() === voiceItem.content.trim()
+    && Math.abs(item.timestamp - voiceItem.timestamp) < 10_000
+  )))
+  if (additions.length === 0) return conversation
+  return [...conversation, ...additions]
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => a.item.timestamp - b.item.timestamp || a.index - b.index)
+    .map(({ item }) => item)
 }
 
 const MACOS_TRAFFIC_LIGHTS_RESERVED_PX = 16 + 12 * 3 + 8 * 2
@@ -864,7 +885,6 @@ function App() {
   const { chatPanePlacement, chatPaneSize } = useTheme()
   const executionAuthority = useJarvisExecutionAuthority()
   const jarvisManaged = executionAuthority?.managed === true
-  const jarvisManagedVoice = useJarvisManagedVoice(jarvisManaged)
   const isChatPaneInMiddle = chatPanePlacement === 'middle'
 
   type ShortcutPane = 'left' | 'right'
@@ -1038,12 +1058,19 @@ function App() {
   const activeIsReasoning = sessionChat.chatState?.isReasoning ?? false
   const activeIsWaitingOnHuman = sessionChat.chatState?.isWaitingOnHuman ?? false
   const activeIsWorking = activeIsProcessing && !activeIsWaitingOnHuman
+  const activeIsProcessingRef = useRef(activeIsProcessing)
+  activeIsProcessingRef.current = activeIsProcessing
   // LIVE chat data: the new runtime streams through sessionChat.chatState —
   // the standalone conversation/currentAssistantMessage states are only the
   // legacy pre-load fallback (see activeChatTabState). Anything mirroring
   // the in-flight reply (pill response panel, fallback speech) must read
   // these, never the legacy states.
-  const liveConversation = sessionChat.chatState?.conversation ?? conversation
+  const [realtimeVoiceTranscript, setRealtimeVoiceTranscript] = useState<ChatMessage[]>([])
+  const baseLiveConversation = sessionChat.chatState?.conversation ?? conversation
+  const liveConversation = React.useMemo(
+    () => mergeRealtimeVoiceTranscript(baseLiveConversation, realtimeVoiceTranscript),
+    [baseLiveConversation, realtimeVoiceTranscript],
+  )
   const liveAssistantMessage = sessionChat.chatState?.currentAssistantMessage ?? currentAssistantMessage
   // A failed session load must be visible, not a blank chat.
   const sessionLoadErrorItems = React.useMemo<ConversationItem[]>(() => (
@@ -1067,6 +1094,8 @@ function App() {
   // Late-bound handle to handleStop (defined much further down) so early
   // call handlers can stop the run without reordering the component.
   const stopRunRef = useRef<(() => Promise<void>) | null>(null)
+  const handlePromptSubmitRef = useRef<((message: PromptInputMessage, mentions?: FileMention[], stagedAttachments?: StagedAttachment[], searchEnabled?: boolean, codeMode?: 'claude' | 'codex', permissionMode?: PermissionMode) => Promise<void>) | null>(null)
+  const pendingVoiceInputRef = useRef(false)
   // Read-aloud style: 'summary' for typed chat, forced to 'full' during a
   // call and restored after. Context decides — the user never picks it.
   const ttsModeRef = useRef<'summary' | 'full'>('summary')
@@ -1083,6 +1112,54 @@ function App() {
   // Latest assistant line handed to TTS — shown as the caption in the
   // full-screen call view while the assistant is speaking.
   const [assistantCaption, setAssistantCaption] = useState('')
+  const [realtimeInterimText, setRealtimeInterimText] = useState('')
+  const [realtimeLastUserText, setRealtimeLastUserText] = useState('')
+  const [realtimeLastAssistantText, setRealtimeLastAssistantText] = useState('')
+  const realtimeDelegateRef = useRef<((delegation: RowboatRealtimeDelegation) => Promise<string>) | null>(null)
+  const realtimeBargeInRef = useRef<(() => void) | null>(null)
+  const realtimeDelegationSessionRef = useRef<string | null>(null)
+  const foregroundDelegationRef = useRef<{ callId: string; turnId: string | null } | null>(null)
+  const appendRealtimeTranscript = useCallback((role: 'user' | 'assistant', id: string, text: string) => {
+    const content = text.trim()
+    if (!content) return
+    const item: ChatMessage = {
+      id: `realtime-${role}-${id}`,
+      role,
+      content,
+      timestamp: Date.now(),
+    }
+    setRealtimeVoiceTranscript((items) => (
+      items.some((existing) => existing.id === item.id) ? items : [...items, item]
+    ))
+  }, [])
+  const rowboatRealtimeVoice = useRowboatRealtimeVoice(jarvisManaged, {
+    onTranscript: ({ id, text }) => {
+      setRealtimeInterimText('')
+      setRealtimeLastUserText(text)
+      appendRealtimeTranscript('user', id, text)
+    },
+    onInterimTranscript: setRealtimeInterimText,
+    onAssistantCaption: setAssistantCaption,
+    onAssistantTranscript: ({ id, text }) => {
+      setRealtimeLastAssistantText(text)
+      appendRealtimeTranscript('assistant', id, text)
+    },
+    onBargeIn: () => realtimeBargeInRef.current?.(),
+    onDelegate: (delegation) => {
+      const callback = realtimeDelegateRef.current
+      if (!callback) return Promise.reject(new Error('Rowboat’s delegation runtime is unavailable.'))
+      return callback(delegation)
+    },
+  })
+  const rowboatRealtimeVoiceRef = useRef(rowboatRealtimeVoice)
+  rowboatRealtimeVoiceRef.current = rowboatRealtimeVoice
+  const speakCallText = useCallback((text: string) => {
+    if (!jarvisManaged) ttsRef.current.speak(text)
+  }, [jarvisManaged])
+  const cancelCallSpeech = useCallback(() => {
+    rowboatRealtimeVoiceRef.current.cancelSpeech()
+    ttsRef.current.cancel()
+  }, [])
   useEffect(() => {
     if (tts.state === 'idle') setAssistantCaption('')
   }, [tts.state])
@@ -1143,11 +1220,11 @@ function App() {
         const marks = callTurnMarksRef.current
         if (marks && marks.speak === undefined) marks.speak = performance.now()
         spokeSegmentThisTurnRef.current = true
-        ttsRef.current.speak(segment)
+        speakCallText(segment)
         setAssistantCaption(segment)
       }
     }
-  }, [voiceSegments, runId, pttStatus])
+  }, [voiceSegments, runId, pttStatus, speakCallText])
 
   // Consistency net: 'full' voice output relies on the model wrapping its
   // reply in <voice> tags — when it doesn't, the turn used to end in total
@@ -1181,17 +1258,20 @@ function App() {
         turn.pending = false
         const speakable = toSpeakableText(item.content)
         if (speakable) {
-          ttsRef.current.speak(speakable)
+          speakCallText(speakable)
           setAssistantCaption(speakable)
         }
       }
       break
     }
-  }, [activeIsProcessing, liveConversation, pttStatus])
+  }, [activeIsProcessing, liveConversation, pttStatus, speakCallText])
 
   // Emit the turn's voice-to-voice latency breakdown once audio is audible.
   useEffect(() => {
-    if (tts.state !== 'speaking') return
+    const outputSpeaking = jarvisManaged
+      ? rowboatRealtimeVoice.state === 'speaking'
+      : tts.state === 'speaking'
+    if (!outputSpeaking) return
     const marks = callTurnMarksRef.current
     if (!marks || marks.submit === undefined || marks.speak === undefined) return
     callTurnMarksRef.current = null
@@ -1202,7 +1282,7 @@ function App() {
       speakToAudioMs: now - marks.speak,
       totalMs: now - marks.t0,
     })
-  }, [tts.state])
+  }, [tts.state, jarvisManaged, rowboatRealtimeVoice.state])
 
   const voice = useVoiceMode()
   const voiceRef = useRef(voice)
@@ -1338,9 +1418,6 @@ function App() {
     })
   }, [voice])
 
-  const handlePromptSubmitRef = useRef<((message: PromptInputMessage, mentions?: FileMention[], stagedAttachments?: StagedAttachment[], searchEnabled?: boolean, codeMode?: 'claude' | 'codex', permissionMode?: PermissionMode) => Promise<void>) | null>(null)
-  const pendingVoiceInputRef = useRef(false)
-
   // Palette: per-tab editor handles for capturing cursor context on Cmd+K, and pending payload
   // queued across the new-chat-tab state flush before submit fires.
   const editorRefsByTabId = useRef<Map<string, MarkdownEditorHandle>>(new Map())
@@ -1374,13 +1451,83 @@ function App() {
   // messages belong to THIS call (the pill's response mirror).
   const callStartedEpochRef = useRef(0)
 
+  const endCall = useCallback(() => {
+    const startedAt = callStartedAtMsRef.current
+    callStartedAtMsRef.current = null
+    if (startedAt != null) {
+      analytics.callEnded((performance.now() - startedAt) / 1000)
+    }
+    voiceRef.current.cancel()
+    void rowboatRealtimeVoiceRef.current.stop()
+    rowboatRealtimeVoiceRef.current.cancelSpeech()
+    ttsRef.current.cancel()
+    realtimeDelegationSessionRef.current = null
+    ttsEnabledRef.current = false
+    ttsModeRef.current = 'summary'
+    callTurnMarksRef.current = null
+    video.stop()
+    setPracticeMode(false)
+    practiceModeRef.current = false
+    setMicMuted(false)
+    setPttState('idle')
+    setCallMinimized(false)
+    inCallRef.current = false
+    setInCall(false)
+  }, [video, setPttState])
+
   const startCall = useCallback(async (preset: CallPreset) => {
     if (inCallRef.current) return
     const camera = preset === 'video' || preset === 'practice'
+    // A manual push-to-talk recording can't coexist with the call's mic.
+    if (isRecordingRef.current) {
+      voiceRef.current.cancel()
+      setIsRecording(false)
+      isRecordingRef.current = false
+    }
+
+    // Enter a cancellable starting state before OAuth or device prompts. The
+    // native Rowboat phone immediately becomes an End control, and endCall()
+    // invalidates pending sign-in, admission, media, and WebRTC work.
+    inCallRef.current = true
+    setInCall(true)
+    setPttState('idle')
+    setPracticeMode(preset === 'practice')
+    practiceModeRef.current = preset === 'practice'
+    setMicMuted(false)
+    setCallMinimized(preset !== 'practice')
+
+    if (jarvisManaged) {
+      setRealtimeVoiceTranscript([])
+      setRealtimeInterimText('')
+      setRealtimeLastUserText('')
+      setRealtimeLastAssistantText('')
+      const result = await rowboatRealtimeVoiceRef.current.start()
+      if (!result.ok) {
+        const stillStarting = inCallRef.current
+        endCall()
+        if (!stillStarting || result.reason === 'cancelled') return
+        if (result.reason === 'microphone_denied') setPermissionDialog('microphone')
+        toast.error('My OAuth voice did not start', {
+          description: result.error || 'GPT Realtime 2.1 OAuth admission failed.',
+          action: {
+            label: 'Use Rowboat Hosted',
+            onClick: () => {
+              void window.ipc.invoke('jarvis:setExecutionAuthority', { mode: 'rowboat_hosted' })
+            },
+          },
+        })
+        return
+      }
+      if (!inCallRef.current) {
+        void rowboatRealtimeVoiceRef.current.stop()
+        return
+      }
+    }
+
     const ok = await video.start({ camera })
-    if (!ok) {
-      // Camera denied/unavailable — stay out of the call, and say why.
-      if (camera) setPermissionDialog('camera')
+    if (!ok || !inCallRef.current) {
+      if (camera && inCallRef.current) setPermissionDialog('camera')
+      endCall()
       return
     }
     if (preset === 'share') {
@@ -1389,6 +1536,10 @@ function App() {
       // the pill once permission is granted. The dialog explains the grant +
       // relaunch dance instead of failing silently.
       const shared = await video.startScreenShare()
+      if (!inCallRef.current) {
+        endCall()
+        return
+      }
       if (!shared) setPermissionDialog('screen-recording')
     } else {
       // Presets that don't share at start still settle the Screen Recording
@@ -1404,97 +1555,59 @@ function App() {
         .catch(() => {})
     }
 
-    // A manual push-to-talk recording can't coexist with the call's mic.
-    if (isRecordingRef.current) {
-      voiceRef.current.cancel()
-      setIsRecording(false)
-      isRecordingRef.current = false
+    if (!jarvisManaged) {
+      // Hosted mode stays on Rowboat's original Deepgram/proxy input path.
+      void voiceRef.current
+        .startPtt((text) => {
+          playAckCue()
+          callTurnMarksRef.current = { t0: performance.now() }
+          pendingVoiceInputRef.current = true
+          handlePromptSubmitRef.current?.({ text, files: [] })
+        })
+        .then((result) => {
+          if (result === 'mic-denied') setPermissionDialog('microphone')
+        })
     }
-    ttsEnabledRef.current = true
+    // Hosted keeps its original Rowboat TTS. My OAuth receives direct
+    // speech-to-speech audio from GPT Realtime and must never read Codex text
+    // back through a second synthesis path.
+    ttsEnabledRef.current = !jarvisManaged
     ttsModeRef.current = 'full'
-    // Push-to-talk: the mic + Deepgram socket stay warm for the whole call,
-    // but nothing is heard until the user opens the gate (hold Right ⌘, or
-    // tap it to lock hands-free capture). The key release is the endpoint —
-    // no silence detection, no misfires.
-    void voiceRef.current
-      .startPtt((text) => {
-        // Instant "heard you" feedback + start of the latency clock.
-        playAckCue()
-        callTurnMarksRef.current = { t0: performance.now() }
-        pendingVoiceInputRef.current = true
-        handlePromptSubmitRef.current?.({ text, files: [] })
-      })
-      .then((result) => {
-        if (result === 'mic-denied') setPermissionDialog('microphone')
-      })
 
     setPttState('idle')
-    setPracticeMode(preset === 'practice')
-    practiceModeRef.current = preset === 'practice'
-    setMicMuted(false)
-    // Every preset starts in the floating pill (video included — the camera
-    // preview lives in the pill) except practice, where the coaching session
-    // is a deliberate face-to-face full screen.
-    setCallMinimized(preset !== 'practice')
-    inCallRef.current = true
-    setInCall(true)
     callStartedAtMsRef.current = performance.now()
     callStartedEpochRef.current = Date.now()
     analytics.callStarted(preset)
-  }, [video, setPttState])
-
-  const endCall = useCallback(() => {
-    if (!inCallRef.current) return
-    const startedAt = callStartedAtMsRef.current
-    callStartedAtMsRef.current = null
-    analytics.callEnded(startedAt != null ? (performance.now() - startedAt) / 1000 : 0)
-    voiceRef.current.cancel()
-    ttsEnabledRef.current = false
-    ttsModeRef.current = 'summary'
-    ttsRef.current.cancel()
-    callTurnMarksRef.current = null
-    video.stop()
-    setPracticeMode(false)
-    practiceModeRef.current = false
-    setMicMuted(false)
-    setPttState('idle')
-    setCallMinimized(false)
-    inCallRef.current = false
-    setInCall(false)
-  }, [video, setPttState])
+  }, [video, setPttState, jarvisManaged, endCall])
 
   const previousJarvisManagedRef = useRef(jarvisManaged)
   useEffect(() => {
     const wasManaged = previousJarvisManagedRef.current
     previousJarvisManagedRef.current = jarvisManaged
-    if (!wasManaged && jarvisManaged && inCallRef.current) endCall()
+    if (wasManaged !== jarvisManaged) endCall()
   }, [endCall, jarvisManaged])
-
-  const startJarvisManagedCall = useCallback((_preset: CallPreset) => {
-    void jarvisManagedVoice.start().then((result) => {
-      if (result.accepted === false) {
-        toast.error(result.error || 'GPT Realtime 2.1 OAuth voice could not start.')
-        return
-      }
-      toast.message('Starting GPT Realtime 2.1 with ChatGPT OAuth · Pocket TTS output')
-    })
-  }, [jarvisManagedVoice.start])
-
-  const endJarvisManagedCall = useCallback(() => {
-    void jarvisManagedVoice.stop().then((result) => {
-      if (result.accepted === false) {
-        toast.error(result.error || 'The managed OAuth voice session could not stop.')
-      }
-    })
-  }, [jarvisManagedVoice.stop])
 
   const lastManagedVoiceErrorRef = useRef('')
   useEffect(() => {
-    if (!jarvisManaged || jarvisManagedVoice.status !== 'error' || !jarvisManagedVoice.error) return
-    if (lastManagedVoiceErrorRef.current === jarvisManagedVoice.error) return
-    lastManagedVoiceErrorRef.current = jarvisManagedVoice.error
-    toast.error(jarvisManagedVoice.error)
-  }, [jarvisManaged, jarvisManagedVoice.error, jarvisManagedVoice.status])
+    if (
+      !jarvisManaged
+      || !inCallRef.current
+      || rowboatRealtimeVoice.state !== 'error'
+      || !rowboatRealtimeVoice.error
+    ) return
+    if (lastManagedVoiceErrorRef.current === rowboatRealtimeVoice.error) return
+    lastManagedVoiceErrorRef.current = rowboatRealtimeVoice.error
+    toast.error('My OAuth voice connection ended', {
+      description: rowboatRealtimeVoice.error,
+      action: {
+        label: 'Use Rowboat Hosted',
+        onClick: () => {
+          void window.ipc.invoke('jarvis:setExecutionAuthority', { mode: 'rowboat_hosted' })
+        },
+      },
+    })
+    endCall()
+  }, [endCall, jarvisManaged, rowboatRealtimeVoice.error, rowboatRealtimeVoice.state])
 
   // The user-mute half that lives in the video pipeline: stop sampling
   // camera/screen frames while muted (see useVideoMode.setCapturePaused).
@@ -1548,8 +1661,11 @@ function App() {
   // generating (if it already finished, stopping the speech is all there is
   // to do). Wired to the Stop control next to the mascot on both surfaces.
   const handleInterruptAssistant = useCallback(() => {
-    ttsRef.current.cancel()
+    cancelCallSpeech()
     setAssistantCaption('')
+    if (jarvisManaged) {
+      return
+    }
     if (voiceSegments) {
       spokenVoiceRef.current.count = voiceSegments.length
     }
@@ -1558,7 +1674,7 @@ function App() {
     if (activeIsProcessing) {
       void stopRunRef.current?.()
     }
-  }, [voiceSegments, activeIsProcessing])
+  }, [voiceSegments, activeIsProcessing, cancelCallSpeech, jarvisManaged])
 
   // --- Push-to-talk state machine ---
   // One edge-triggered machine fed by every source: the global key hook
@@ -1581,6 +1697,7 @@ function App() {
 
   const handlePttDown = useCallback(() => {
     if (!inCallRef.current || micMutedRef.current) return
+    if (jarvisManaged) return
     if (pttEdgeIsEcho('down')) return
     pttChordedRef.current = false
     pttDownAtRef.current = performance.now()
@@ -1589,15 +1706,16 @@ function App() {
       // but do NOT abort the run or discard its reply: an accidental or
       // empty press must never cost the answer. The run is stopped only
       // when a real utterance actually submits (handlePromptSubmit).
-      ttsRef.current.cancel()
+      cancelCallSpeech()
       setAssistantCaption('')
       voiceRef.current.pttBegin()
       setPttState('held')
     }
     // 'locked': the mic is already open — the release decides what happens.
-  }, [pttEdgeIsEcho, setPttState])
+  }, [pttEdgeIsEcho, setPttState, jarvisManaged, cancelCallSpeech])
 
   const handlePttUp = useCallback(() => {
+    if (jarvisManaged) return
     if (pttStatusRef.current === 'idle') return
     if (pttEdgeIsEcho('up')) return
     if (pttChordedRef.current) {
@@ -1624,15 +1742,17 @@ function App() {
     // Releasing a hold (or pressing again while locked) submits.
     setPttState('idle')
     void voiceRef.current.pttEnd()
-  }, [pttEdgeIsEcho, setPttState])
+  }, [pttEdgeIsEcho, setPttState, jarvisManaged])
 
   const handlePttCancel = useCallback(() => {
+    if (jarvisManaged) return
     if (pttStatusRef.current === 'idle') return
     voiceRef.current.pttCancel()
     setPttState('idle')
-  }, [setPttState])
+  }, [setPttState, jarvisManaged])
 
   const handlePttChord = useCallback(() => {
+    if (jarvisManaged) return
     // The press was a keyboard shortcut, not a talk gesture.
     if (pttStatusRef.current === 'held') {
       voiceRef.current.pttCancel()
@@ -1640,7 +1760,7 @@ function App() {
     } else if (pttStatusRef.current === 'locked') {
       pttChordedRef.current = true
     }
-  }, [setPttState])
+  }, [setPttState, jarvisManaged])
 
   // PTT key sources: the global hook (works over any app) plus in-window DOM
   // listeners — the fallback that keeps PTT working while the app is focused
@@ -1680,8 +1800,12 @@ function App() {
   // Muting mid-capture discards the capture — nothing said while muted may
   // reach the assistant.
   useEffect(() => {
-    if (micMuted) handlePttCancel()
-  }, [micMuted, handlePttCancel])
+    if (jarvisManaged) {
+      rowboatRealtimeVoiceRef.current.setMuted(micMuted)
+    } else if (micMuted) {
+      handlePttCancel()
+    }
+  }, [micMuted, handlePttCancel, jarvisManaged])
 
   // Global-PTT onboarding: shortly into a call, if the key hook is running
   // but has seen zero input events, macOS Input Monitoring hasn't taken
@@ -1691,7 +1815,7 @@ function App() {
   // call would nag. (In-window PTT works regardless.)
   const inputMonitoringPromptedRef = useRef(false)
   useEffect(() => {
-    if (!inCall) return
+    if (!inCall || jarvisManaged) return
     if (inputMonitoringPromptedRef.current) return
     const timer = setTimeout(async () => {
       try {
@@ -1705,19 +1829,27 @@ function App() {
       }
     }, 4000)
     return () => clearTimeout(timer)
-  }, [inCall])
+  }, [inCall, jarvisManaged])
 
   // Current phase of the call (null when not in one). An open mic gate reads
   // as listening no matter what the assistant is doing — the user is talking.
   const videoCallStatus: 'idle' | 'listening' | 'thinking' | 'speaking' | null =
     inCall
-      ? pttStatus !== 'idle'
-        ? 'listening'
-        : tts.state === 'speaking'
-          ? 'speaking'
-          : tts.state === 'synthesizing' || activeIsProcessing
-            ? 'thinking'
-            : 'idle'
+      ? jarvisManaged
+        ? rowboatRealtimeVoice.state === 'listening'
+          ? 'listening'
+          : rowboatRealtimeVoice.state === 'speaking'
+            ? 'speaking'
+            : ['starting', 'transcribing', 'thinking', 'delegating'].includes(rowboatRealtimeVoice.state)
+              ? 'thinking'
+              : 'idle'
+        : pttStatus !== 'idle'
+          ? 'listening'
+          : tts.state === 'speaking'
+            ? 'speaking'
+            : tts.state === 'synthesizing' || activeIsProcessing
+              ? 'thinking'
+              : 'idle'
       : null
 
   // The call's surface follows one rule: full screen and screen sharing are
@@ -1761,6 +1893,10 @@ function App() {
   let callResponseText: string | null = null
   let callQuestionText: string | null = null
   if (inCall) {
+    if (jarvisManaged) {
+      callQuestionText = realtimeLastUserText || null
+      callResponseText = realtimeLastAssistantText || assistantCaption || null
+    } else {
     // The question the reply answers — shown above it in the pill's panel.
     let questionAt = 0
     for (let i = liveConversation.length - 1; i >= 0; i--) {
@@ -1788,7 +1924,17 @@ function App() {
         }
       }
     }
+    }
   }
+
+  const callTtsState = jarvisManaged
+    ? rowboatRealtimeVoice.state === 'speaking'
+      ? 'speaking'
+      : ['starting', 'transcribing', 'thinking', 'delegating'].includes(rowboatRealtimeVoice.state)
+        ? 'synthesizing'
+        : 'idle'
+    : tts.state
+  const getCallTtsLevel = jarvisManaged ? rowboatRealtimeVoice.getLevel : tts.getLevel
 
   // Keep the popout's mascot/status/devices/caption mirror of the call fresh.
   // The main process caches the latest state and replays it when the popout
@@ -1797,18 +1943,19 @@ function App() {
     if (!inCall) return
     void window.ipc
       .invoke('video:popoutState', {
-        ttsState: tts.state,
+        ttsState: callTtsState,
         status: videoCallStatus,
         cameraOn: video.cameraOn,
         micMuted,
         screenSharing: video.screenState === 'live',
-        interimText: voice.interimText || null,
+        interimText: (jarvisManaged ? realtimeInterimText : voice.interimText) || null,
         pttLocked: pttStatus === 'locked',
+        continuousListening: jarvisManaged,
         responseText: callResponseText,
         questionText: callQuestionText,
       })
       .catch(() => {})
-  }, [inCall, tts.state, videoCallStatus, video.cameraOn, micMuted, video.screenState, voice.interimText, pttStatus, callResponseText, callQuestionText])
+  }, [inCall, callTtsState, videoCallStatus, video.cameraOn, micMuted, video.screenState, voice.interimText, realtimeInterimText, pttStatus, callResponseText, callQuestionText, jarvisManaged])
 
   // Execute popout control-bar actions (the popout window has no access to
   // the call's mic/camera/capture — they live here). 'expand' goes full
@@ -3083,7 +3230,7 @@ function App() {
               const voiceContent = voiceMatch[1].trim()
               console.log('[voice] extracted voice tag:', voiceContent)
               if (voiceContent && ttsEnabledRef.current) {
-                ttsRef.current.speak(voiceContent)
+                speakCallText(voiceContent)
                 setAssistantCaption(voiceContent)
               }
               spokenIndexRef.current += voiceMatch.index + voiceMatch[0].length
@@ -3385,7 +3532,7 @@ function App() {
         console.error('Run error:', event.error)
         break
     }
-  }, [appendStreamingBuffer, clearStreamingBuffer, jarvisManaged, loadRuns])
+  }, [appendStreamingBuffer, clearStreamingBuffer, jarvisManaged, loadRuns, speakCallText])
 
   // Listen to run events - use refs/callbacks to avoid stale closure issues.
   useEffect(() => {
@@ -3461,7 +3608,7 @@ function App() {
       // over the new turn. (The overlay resets its segment list when the
       // new turn starts; the segment player detects that shrink and
       // restarts from the top.)
-      ttsRef.current.cancel()
+      cancelCallSpeech()
       if (voiceSegmentsRef.current) {
         spokenVoiceRef.current.count = voiceSegmentsRef.current.length
       }
@@ -3705,6 +3852,121 @@ function App() {
   }
   handlePromptSubmitRef.current = handlePromptSubmit
 
+  realtimeBargeInRef.current = () => {
+    // WebRTC VAD already cancels and truncates the in-progress provider audio.
+    // The delegation callback's AbortSignal stops only its exact Rowboat turn.
+    setAssistantCaption('')
+    setRealtimeLastAssistantText('')
+  }
+
+  realtimeDelegateRef.current = async ({ callId, request, signal }) => {
+    const submitTabId = activeChatTabIdRef.current
+    let delegationSessionId = realtimeDelegationSessionRef.current
+
+    // Reuse the visible chat when it is idle so permissions, tools, and durable
+    // results remain in the user's current Rowboat conversation. If that chat
+    // is already working, isolate this foreground voice task in its own
+    // Rowboat session rather than cancelling unrelated work.
+    if (!delegationSessionId) {
+      if (runIdRef.current && !activeIsProcessingRef.current) {
+        delegationSessionId = runIdRef.current
+      } else {
+        const created = await ipcSessionsClient.create({
+          title: `Voice work — ${new Date().toLocaleString()}`,
+        })
+        delegationSessionId = created.sessionId
+        const pendingWorkDir = workDirByTabRef.current[submitTabId] ?? null
+        if (pendingWorkDir) await persistRunWorkDir(delegationSessionId, pendingWorkDir)
+
+        // When the visible chat is empty, make the new durable voice-work
+        // session the active chat. A busy visible chat remains untouched.
+        if (!runIdRef.current) {
+          runIdRef.current = delegationSessionId
+          setRunId(delegationSessionId)
+          setChatTabs((tabs) => tabs.map((tab) => (
+            tab.id === submitTabId ? { ...tab, runId: delegationSessionId } : tab
+          )))
+          analytics.chatSessionCreated(delegationSessionId)
+        }
+      }
+      realtimeDelegationSessionRef.current = delegationSessionId
+    }
+
+    const selected = selectedModelByTabRef.current.get(submitTabId)
+    const reasoningEffort = reasoningEffortByTabRef.current.get(submitTabId)
+    const chatMaxModelCalls = await window.ipc
+      .invoke('turnLimits:getSettings', null)
+      .then((settings) => settings.chatMaxModelCalls)
+      .catch(() => undefined)
+    const middlePane = await buildMiddlePaneContext()
+    const videoFrames = inCallRef.current ? video.collectFrames() : []
+    const messageContent = videoFrames.length > 0
+      ? [
+          { type: 'text' as const, text: request },
+          ...videoFrames.map((frame) => ({
+            type: 'image' as const,
+            data: frame.data,
+            mediaType: frame.mediaType,
+            source: frame.source,
+            capturedAt: frame.capturedAt,
+          })),
+        ]
+      : request
+
+    foregroundDelegationRef.current = { callId, turnId: null }
+    try {
+      return await runRowboatRealtimeDelegation({
+        callId,
+        sessionId: delegationSessionId,
+        input: {
+          role: 'user',
+          content: messageContent,
+          userMessageContext: {
+            currentDateTime: `${new Date().toLocaleString('en-US', {
+              weekday: 'long',
+              year: 'numeric',
+              month: 'long',
+              day: 'numeric',
+              hour: 'numeric',
+              minute: '2-digit',
+              timeZoneName: 'short',
+            })} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`,
+            middlePane: middlePane ?? { kind: 'empty' as const },
+          },
+        },
+        config: {
+          agent: {
+            agentId,
+            overrides: {
+              ...(selected ? { model: { provider: selected.provider, model: selected.model } } : {}),
+              composition: {
+                workDirId: delegationSessionId,
+                voiceInput: true,
+                ...(inCallRef.current && (video.cameraOn || video.screenState === 'live')
+                  ? { videoMode: true }
+                  : {}),
+                ...(practiceModeRef.current ? { coachMode: true } : {}),
+              },
+            },
+          },
+          autoPermission: true,
+          ...(reasoningEffort ? { reasoningEffort } : {}),
+          ...(chatMaxModelCalls !== undefined ? { maxModelCalls: chatMaxModelCalls } : {}),
+        },
+        signal,
+        onTurnId: (turnId) => {
+          if (foregroundDelegationRef.current?.callId === callId) {
+            foregroundDelegationRef.current.turnId = turnId
+          }
+        },
+      })
+    } finally {
+      if (foregroundDelegationRef.current?.callId === callId) {
+        foregroundDelegationRef.current = null
+      }
+    }
+  }
+
   const handleComposioConnected = useCallback((toolkitSlug: string) => {
     // Auto-send a continuation message when a Composio toolkit connects
     const name = composioDisplayNames[toolkitSlug] || toolkitSlug
@@ -3726,14 +3988,14 @@ function App() {
     // Stopping the run must also silence it — the TTS queue holds segments
     // that were already extracted from the stream and would keep playing
     // long after the turn is aborted.
-    ttsRef.current.cancel()
+    cancelCallSpeech()
     setAssistantCaption('')
     try {
       await sessionChat.stop()
     } catch (error) {
       console.error('Failed to stop turn:', error)
     }
-  }, [runId, sessionChat])
+  }, [runId, sessionChat, cancelCallSpeech])
   stopRunRef.current = handleStop
 
   const handlePermissionResponse = useCallback(async (
@@ -6732,11 +6994,11 @@ function App() {
   // standalone states remain only as the pre-load fallback until stage 7).
   const activeChatTabState = React.useMemo<ChatTabViewState>(() => (
     sessionChat.chatState
-      ? { runId, ...sessionChat.chatState }
+      ? { runId, ...sessionChat.chatState, conversation: liveConversation }
       : {
           runId,
           sessionUsage: {},
-          conversation: sessionLoadErrorItems.length > 0 ? sessionLoadErrorItems : conversation,
+          conversation: sessionLoadErrorItems.length > 0 ? sessionLoadErrorItems : liveConversation,
           currentAssistantMessage,
           pendingAskHumanRequests,
           allPermissionRequests,
@@ -6747,7 +7009,7 @@ function App() {
     runId,
     sessionChat.chatState,
     sessionLoadErrorItems,
-    conversation,
+    liveConversation,
     currentAssistantMessage,
     pendingAskHumanRequests,
     allPermissionRequests,
@@ -7590,11 +7852,12 @@ function App() {
                             onSubmitRecording={isActive && !jarvisManaged ? handleSubmitRecording : undefined}
                             onCancelRecording={isActive && !jarvisManaged ? handleCancelRecording : undefined}
                             voiceAvailable={isActive && !jarvisManaged && voiceAvailable}
-                            inCall={jarvisManaged ? jarvisManagedVoice.active : inCall}
-                            onStartCall={isActive ? (jarvisManaged ? startJarvisManagedCall : startCall) : undefined}
-                            onEndCall={isActive ? (jarvisManaged ? endJarvisManagedCall : endCall) : undefined}
-                            callAvailable={jarvisManaged ? jarvisManagedVoice.supported : voiceAvailable && ttsAvailable}
-                            managedCall={jarvisManaged}
+                            inCall={inCall}
+                            onStartCall={isActive ? startCall : undefined}
+                            onEndCall={isActive ? endCall : undefined}
+                            callAvailable={jarvisManaged ? rowboatRealtimeVoice.supported : voiceAvailable && ttsAvailable}
+                            realtimeOAuthCall={jarvisManaged}
+                            callConnectionState={jarvisManaged ? rowboatRealtimeVoice.state : voice.state}
                           />
                         </div>
                       )
@@ -7710,11 +7973,12 @@ function App() {
                 onSubmitRecording={jarvisManaged ? undefined : handleSubmitRecording}
                 onCancelRecording={jarvisManaged ? undefined : handleCancelRecording}
                 voiceAvailable={!jarvisManaged && voiceAvailable}
-                inCall={jarvisManaged ? jarvisManagedVoice.active : inCall}
-                onStartCall={jarvisManaged ? startJarvisManagedCall : startCall}
-                onEndCall={jarvisManaged ? endJarvisManagedCall : endCall}
-                callAvailable={jarvisManaged ? jarvisManagedVoice.supported : voiceAvailable && ttsAvailable}
-                managedCall={jarvisManaged}
+                inCall={inCall}
+                onStartCall={startCall}
+                onEndCall={endCall}
+                callAvailable={jarvisManaged ? rowboatRealtimeVoice.supported : voiceAvailable && ttsAvailable}
+                realtimeOAuthCall={jarvisManaged}
+                callConnectionState={jarvisManaged ? rowboatRealtimeVoice.state : voice.state}
                 onComposioConnected={handleComposioConnected}
               />
             )}
@@ -7733,13 +7997,14 @@ function App() {
                 practiceMode={practiceMode}
                 onMinimize={() => void handleMinimizeCall()}
                 onInterrupt={handleInterruptAssistant}
-                ttsState={tts.state}
-                getTtsLevel={tts.getLevel}
+                ttsState={callTtsState}
+                getTtsLevel={getCallTtsLevel}
                 status={videoCallStatus ?? 'idle'}
                 pttStatus={pttStatus}
+                continuousListening={jarvisManaged}
                 onPttDown={handlePttDown}
                 onPttUp={handlePttUp}
-                interimText={voice.interimText}
+                interimText={jarvisManaged ? realtimeInterimText : voice.interimText}
                 assistantCaption={assistantCaption}
                 onLeave={endCall}
               />

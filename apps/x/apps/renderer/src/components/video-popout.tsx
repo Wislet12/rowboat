@@ -14,6 +14,8 @@ type PopoutState = {
   interimText: string | null
   /** A quick ⌘ tap locked hands-free capture (until the next tap). */
   pttLocked: boolean
+  /** My OAuth Realtime keeps the microphone live and uses VAD/barge-in. */
+  continuousListening: boolean
   /** Latest assistant reply of this call (streams while generating). */
   responseText: string | null
   /** The user message that reply answers. */
@@ -50,7 +52,7 @@ export function VideoPopout() {
   // Camera defaults OFF: guessing "on" would flash the user's video for a
   // beat before the real state arrives — which reads as a bug. The true
   // state is fetched immediately below.
-  const [state, setState] = useState<PopoutState>({ ttsState: 'idle', status: null, cameraOn: false, micMuted: false, screenSharing: false, interimText: null, pttLocked: false, responseText: null, questionText: null })
+  const [state, setState] = useState<PopoutState>({ ttsState: 'idle', status: null, cameraOn: false, micMuted: false, screenSharing: false, interimText: null, pttLocked: false, continuousListening: false, responseText: null, questionText: null })
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const [draft, setDraft] = useState('')
   // Response panel: auto-opens when a new turn starts generating, user can
@@ -184,6 +186,11 @@ export function VideoPopout() {
                   <span className="block h-1.5 w-1.5 rounded-full bg-red-500" />
                   Muted
                 </>
+              ) : state.continuousListening ? (
+                <>
+                  <span className={`block h-1.5 w-1.5 rounded-full ${statusDisplay.dotClass}`} />
+                  {state.status === 'idle' ? 'Live' : statusDisplay.label}
+                </>
               ) : state.pttLocked ? (
                 <>
                   <span className="block h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
@@ -226,7 +233,7 @@ export function VideoPopout() {
         {/* Push-to-talk: hold to talk, quick tap to lock hands-free —
             mirrors the Right ⌘ key. Pointer capture keeps the release edge
             even if the cursor slides off mid-hold. */}
-        <button
+        {!state.continuousListening && <button
           type="button"
           onPointerDown={(e) => {
             e.currentTarget.setPointerCapture(e.pointerId)
@@ -245,7 +252,7 @@ export function VideoPopout() {
         >
           <Mic className="h-3 w-3" />
           {state.pttLocked ? 'Tap to send' : state.status === 'listening' ? 'Release to send' : 'Hold to talk'}
-        </button>
+        </button>}
         <button
           type="button"
           onClick={() => sendAction('toggle-mic')}

@@ -63,6 +63,8 @@ export function AccountSettings({ dialogOpen }: AccountSettingsProps) {
   const [disconnecting, setDisconnecting] = useState(false)
   const [connecting, setConnecting] = useState(false)
   const [authorityChanging, setAuthorityChanging] = useState(false)
+  const [realtimeVoiceAuth, setRealtimeVoiceAuth] = useState<{ signedIn: boolean; storageReady: boolean } | null>(null)
+  const [realtimeVoiceAuthBusy, setRealtimeVoiceAuthBusy] = useState(false)
   const appUrl = useRowboatConfig()?.appUrl ?? null
   const executionAuthority = useJarvisExecutionAuthority()
   const jarvisManaged = executionAuthority?.managed === true
@@ -85,11 +87,21 @@ export function AccountSettings({ dialogOpen }: AccountSettingsProps) {
     }
   }, [])
 
+  const refreshRealtimeVoiceAuth = useCallback(async () => {
+    try {
+      const status = await window.ipc.invoke('rowboatRealtimeVoice:getAuthStatus', null)
+      setRealtimeVoiceAuth({ signedIn: status.signedIn, storageReady: status.storageReady })
+    } catch {
+      setRealtimeVoiceAuth({ signedIn: false, storageReady: false })
+    }
+  }, [])
+
   useEffect(() => {
     if (dialogOpen) {
       checkConnection()
+      void refreshRealtimeVoiceAuth()
     }
-  }, [dialogOpen, checkConnection])
+  }, [dialogOpen, checkConnection, refreshRealtimeVoiceAuth])
 
   useEffect(() => {
     const cleanup = window.ipc.on('oauth:didConnect', (event) => {
@@ -148,8 +160,8 @@ export function AccountSettings({ dialogOpen }: AccountSettingsProps) {
     try {
       const next = await setJarvisExecutionAuthority(managed ? "jarvis_oauth" : "rowboat_hosted")
       if (next.managed) {
-        toast.success("My JARVIS OAuth is now authoritative", {
-          description: "Codex/ChatGPT OAuth is active. Rowboat plan and credit limits are not used.",
+        toast.success("My OAuth is now authoritative", {
+          description: "Codex OAuth is active for text. Voice uses its separate ChatGPT OAuth grant with the Cedar masculine voice.",
         })
       } else {
         toast.success("Rowboat hosted execution enabled", {
@@ -164,6 +176,32 @@ export function AccountSettings({ dialogOpen }: AccountSettingsProps) {
       setAuthorityChanging(false)
     }
   }, [])
+
+  const handleRealtimeVoiceSignIn = useCallback(async () => {
+    setRealtimeVoiceAuthBusy(true)
+    try {
+      const result = await window.ipc.invoke('rowboatRealtimeVoice:signIn', null)
+      await refreshRealtimeVoiceAuth()
+      if (result.signedIn) {
+        toast.success("GPT Realtime voice OAuth connected")
+      } else if (!result.cancelled) {
+        toast.error("Voice OAuth did not connect", { description: result.error })
+      }
+    } finally {
+      setRealtimeVoiceAuthBusy(false)
+    }
+  }, [refreshRealtimeVoiceAuth])
+
+  const handleRealtimeVoiceSignOut = useCallback(async () => {
+    setRealtimeVoiceAuthBusy(true)
+    try {
+      await window.ipc.invoke('rowboatRealtimeVoice:signOut', null)
+      await refreshRealtimeVoiceAuth()
+      toast.success("GPT Realtime voice OAuth disconnected")
+    } finally {
+      setRealtimeVoiceAuthBusy(false)
+    }
+  }, [refreshRealtimeVoiceAuth])
 
   if (connectionLoading || !executionAuthority) {
     return (
@@ -187,25 +225,25 @@ export function AccountSettings({ dialogOpen }: AccountSettingsProps) {
           <div className="flex items-center gap-2">
             <ShieldCheck className={`size-4 ${jarvisManaged ? "text-emerald-500" : "text-amber-500"}`} />
             <p className="text-sm font-medium">
-              {jarvisManaged ? "My JARVIS OAuth is authoritative" : "Rowboat hosted account is authoritative"}
+              {jarvisManaged ? "My OAuth is authoritative" : "Rowboat Hosted is authoritative"}
             </p>
           </div>
           <p className="text-xs text-muted-foreground">
             {jarvisManaged
-              ? "Uses your existing Codex/ChatGPT OAuth subscription. No API key is required, and Rowboat Free/credit limits are bypassed."
-              : "Uses Rowboat-hosted models and its account plan. Switch this on to return to your own JARVIS OAuth subscription."}
+              ? "Text uses Codex OAuth. Voice uses a separate ChatGPT OAuth grant for Rowboat-owned GPT Realtime 2.1 with the Cedar masculine voice. No API key or Rowboat hosted credits are used."
+              : "Uses Rowboat-hosted models, voice providers, and its account plan. Switch this on to return to My OAuth."}
           </p>
         </div>
         <Switch
           checked={jarvisManaged}
           disabled={authorityChanging || (!executionAuthority.available && !jarvisManaged)}
           onCheckedChange={(checked) => void handleAuthorityChange(checked)}
-          aria-label="Use my JARVIS OAuth subscription"
+          aria-label="Use My OAuth"
           data-testid="rowboat-execution-authority-toggle"
         />
       </div>
       <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t pt-3 text-[11px] text-muted-foreground">
-        <span>On: Codex OAuth + JARVIS voice</span>
+        <span>On: Codex OAuth text + separate ChatGPT OAuth voice (Cedar)</span>
         <span>Off: Rowboat hosted plan</span>
         <span>BYOK and local models stay optional</span>
       </div>
@@ -222,13 +260,13 @@ export function AccountSettings({ dialogOpen }: AccountSettingsProps) {
         <div className="space-y-3">
           <div className="flex items-center gap-2">
             <ShieldCheck className="size-4 text-emerald-500" />
-            <h4 className="text-sm font-medium">JARVIS-managed execution</h4>
+            <h4 className="text-sm font-medium">My OAuth execution</h4>
           </div>
           <div className="space-y-4 rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-4">
             <div>
               <p className="text-sm font-medium">Codex OAuth · Rowboat plan not used</p>
               <p className="mt-1 text-xs text-muted-foreground">
-                Text chat runs through the existing JARVIS Codex OAuth account. Rowboat&apos;s hosted
+                Text chat runs through your existing Codex OAuth account. Rowboat&apos;s hosted
                 Free, Starter, Pro, credit, and upgrade limits are not consulted for this execution lane.
               </p>
             </div>
@@ -239,18 +277,37 @@ export function AccountSettings({ dialogOpen }: AccountSettingsProps) {
               </div>
               <div>
                 <p className="font-medium">Voice</p>
-                <p className="text-muted-foreground">Chat phone: GPT Realtime 2.1 · ChatGPT OAuth</p>
+                <p className="text-muted-foreground">
+                  GPT Realtime 2.1 · Cedar masculine voice · separate ChatGPT OAuth · {realtimeVoiceAuth?.signedIn ? "connected" : "sign-in required"}
+                </p>
               </div>
               <div className="sm:col-span-2">
                 <p className="flex items-center gap-1.5 font-medium"><AudioLines className="size-3.5" /> Audible output</p>
-                <p className="text-muted-foreground">Pocket TTS cloned JARVIS voice</p>
+                <p className="text-muted-foreground">Native Cedar voice over GPT Realtime WebRTC, owned by Rowboat</p>
               </div>
             </div>
+            <div className="flex flex-wrap items-center gap-2 border-t pt-3">
+              {realtimeVoiceAuth?.signedIn ? (
+                <Button variant="outline" size="sm" onClick={handleRealtimeVoiceSignOut} disabled={realtimeVoiceAuthBusy}>
+                  {realtimeVoiceAuthBusy ? <Loader2 className="mr-2 size-4 animate-spin" /> : <LogOut className="mr-2 size-4" />}
+                  Disconnect voice OAuth
+                </Button>
+              ) : (
+                <Button size="sm" onClick={handleRealtimeVoiceSignIn} disabled={realtimeVoiceAuthBusy || realtimeVoiceAuth?.storageReady === false}>
+                  {realtimeVoiceAuthBusy ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
+                  Sign in for GPT Realtime voice
+                </Button>
+              )}
+              {realtimeVoiceAuth?.storageReady === false ? (
+                <span className="text-xs text-destructive">Secure Windows credential storage is unavailable.</span>
+              ) : null}
+            </div>
             <p className="border-t pt-3 text-xs text-muted-foreground">
-              The phone stays available in every Rowboat chat. In My OAuth mode it starts your independent GPT Realtime
-              2.1 ChatGPT OAuth session and speaks through Pocket TTS, without consulting Rowboat credits. Rowboat Hosted
-              mode keeps the original hosted phone engine. The separate JARVIS voice layer above the workspace also keeps
-              Gemini 3.1 Flash available.
+              The phone stays available in every Rowboat chat. My OAuth starts a Rowboat-owned, full-duplex GPT Realtime
+              WebRTC conversation with continuous listening, server turn detection, and interruption. Ordinary conversation
+              stays speech-to-speech; requests that need apps, files, code, research, or durable actions are delegated to
+              Rowboat&apos;s existing Codex-authorized tool runtime. Rowboat Hosted keeps its original phone engine and normal
+              plan limits. OAuth account limits can still apply.
             </p>
           </div>
         </div>
@@ -264,8 +321,8 @@ export function AccountSettings({ dialogOpen }: AccountSettingsProps) {
           </div>
           <p className="text-xs text-muted-foreground">
             {isRowboatConnected
-              ? "Connected for Rowboat-hosted sync features. It does not control JARVIS text or voice execution."
-              : "Connect only if you want optional Rowboat-hosted sync features. No API key is required for JARVIS text or voice."}
+              ? "Connected for Rowboat-hosted sync features. It does not control My OAuth text or voice execution."
+              : "Connect only if you want optional Rowboat-hosted sync features. No API key is required for My OAuth text or voice."}
           </p>
           {isRowboatConnected ? (
             <Button variant="outline" size="sm" onClick={handleDisconnect} disabled={disconnecting}>

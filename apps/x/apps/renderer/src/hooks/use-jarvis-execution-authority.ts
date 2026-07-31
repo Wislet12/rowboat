@@ -9,7 +9,7 @@ export type JarvisExecutionAuthority = {
   textProvider: "codex_oauth" | "rowboat_configured"
   voiceProvider: "gpt-realtime-2.1" | "rowboat_configured"
   voiceAuthMode: "chatgpt_oauth" | "rowboat_configured"
-  voiceOutput: "pocket_tts" | "rowboat_configured"
+  voiceOutput: "gpt_realtime_audio" | "rowboat_configured"
   rowboatBillingEnforced: boolean
 }
 

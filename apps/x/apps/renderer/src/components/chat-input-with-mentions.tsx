@@ -230,8 +230,10 @@ interface ChatInputInnerProps {
   onEndCall?: () => void
   /** Calls need both voice input (STT) and voice output (TTS) configured. */
   callAvailable?: boolean
-  /** The phone controls JARVIS GPT Realtime OAuth instead of Rowboat-hosted call presets. */
-  managedCall?: boolean
+  /** The phone uses Rowboat-owned GPT Realtime OAuth instead of the hosted provider lane. */
+  realtimeOAuthCall?: boolean
+  /** Machine-readable native call state used by accessibility and packaged-runtime verification. */
+  callConnectionState?: string
   /** Fired when the user picks a different model in the dropdown (only when no run exists yet). */
   onSelectedModelChange?: (model: SelectedModel | null) => void
   /**
@@ -274,7 +276,8 @@ function ChatInputInner({
   onStartCall,
   onEndCall,
   callAvailable,
-  managedCall,
+  realtimeOAuthCall,
+  callConnectionState,
   onSelectedModelChange,
   onReasoningEffortChange,
   workDir = null,
@@ -1194,13 +1197,19 @@ function ChatInputInner({
                   )}
                   aria-label={
                     inCall
-                      ? managedCall
+                      ? realtimeOAuthCall
                         ? 'End GPT Realtime OAuth voice call'
                         : 'End call'
-                      : managedCall
+                      : realtimeOAuthCall
                         ? 'Start GPT Realtime OAuth voice call'
-                        : 'Start a call'
+                      : 'Start a call'
                   }
+                  data-call-owner="rowboat"
+                  data-call-provider={realtimeOAuthCall ? 'gpt-realtime-2.1' : 'rowboat-hosted'}
+                  data-call-mode={realtimeOAuthCall ? 'full-duplex' : 'hosted-native'}
+                  data-call-turn-detection={realtimeOAuthCall ? 'server-vad' : 'rowboat-hosted'}
+                  data-call-voice={realtimeOAuthCall ? 'cedar' : 'rowboat-hosted'}
+                  data-call-state={callConnectionState || (inCall ? 'active' : 'idle')}
                 >
                   {inCall ? <PhoneOff className="h-4 w-4" /> : <Phone className="h-4 w-4" />}
                 </button>
@@ -1209,15 +1218,15 @@ function ChatInputInner({
                 {inCall
                   ? 'End call'
                   : callAvailable
-                    ? managedCall
-                      ? 'Start GPT Realtime 2.1 voice with ChatGPT OAuth · Pocket TTS output'
+                    ? realtimeOAuthCall
+                      ? 'Start Rowboat-owned GPT Realtime 2.1 voice with ChatGPT OAuth'
                       : 'Start a call — it sees your screen while you talk it through'
-                    : managedCall
-                      ? 'The JARVIS GPT Realtime OAuth voice host is unavailable'
+                    : realtimeOAuthCall
+                      ? 'WebRTC microphone support is unavailable for My OAuth voice'
                       : 'Calls need voice input and output configured'}
               </TooltipContent>
             </Tooltip>
-            {!inCall && !managedCall && (
+            {!inCall && !realtimeOAuthCall && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <button
@@ -1421,7 +1430,8 @@ export interface ChatInputWithMentionsProps {
   onStartCall?: (preset: CallPreset) => void
   onEndCall?: () => void
   callAvailable?: boolean
-  managedCall?: boolean
+  realtimeOAuthCall?: boolean
+  callConnectionState?: string
   onSelectedModelChange?: (model: SelectedModel | null) => void
   onReasoningEffortChange?: (effort: ReasoningEffortLevel | null) => void
   workDir?: string | null
@@ -1456,7 +1466,8 @@ export function ChatInputWithMentions({
   onStartCall,
   onEndCall,
   callAvailable,
-  managedCall,
+  realtimeOAuthCall,
+  callConnectionState,
   onSelectedModelChange,
   onReasoningEffortChange,
   workDir,
@@ -1488,7 +1499,8 @@ export function ChatInputWithMentions({
         onStartCall={onStartCall}
         onEndCall={onEndCall}
         callAvailable={callAvailable}
-        managedCall={managedCall}
+        realtimeOAuthCall={realtimeOAuthCall}
+        callConnectionState={callConnectionState}
         onSelectedModelChange={onSelectedModelChange}
         onReasoningEffortChange={onReasoningEffortChange}
         workDir={workDir}

@@ -76,15 +76,31 @@ const UpdaterStatusSchema = z.object({
   lastCheckedAt: z.number().optional(),
 });
 
-const JarvisManagedVoiceStatusSchema = z.object({
-  supported: z.boolean(),
-  managed: z.boolean(),
-  status: z.enum(['stopped', 'starting', 'listening', 'thinking', 'processing', 'speaking', 'error']),
-  active: z.boolean(),
+const RowboatRealtimeVoiceFailureSchema = z.enum([
+  'needs_sign_in',
+  'secure_storage_unavailable',
+  'oauth_realtime_not_authorized',
+  'network_unavailable',
+  'invalid_request',
+  'stale_session',
+  'mode_inactive',
+  'forbidden_sender',
+  'provider_unavailable',
+  'cancelled',
+]);
+
+const RowboatRealtimeVoiceIdentitySchema = z.object({
   provider: z.literal('gpt-realtime-2.1'),
   authMode: z.literal('chatgpt_oauth'),
-  output: z.literal('pocket_tts'),
-  updatedAt: z.string(),
+  owner: z.literal('rowboat'),
+  transport: z.literal('webrtc'),
+  output: z.literal('gpt_realtime_audio'),
+  voice: z.literal('cedar'),
+});
+
+const RowboatRealtimeVoiceFailureResultSchema = z.object({
+  ok: z.literal(false),
+  reason: RowboatRealtimeVoiceFailureSchema,
   error: z.string().optional(),
 });
 
@@ -106,7 +122,7 @@ const ipcSchemas = {
       textProvider: z.enum(['codex_oauth', 'rowboat_configured']),
       voiceProvider: z.enum(['gpt-realtime-2.1', 'rowboat_configured']),
       voiceAuthMode: z.enum(['chatgpt_oauth', 'rowboat_configured']),
-      voiceOutput: z.enum(['pocket_tts', 'rowboat_configured']),
+      voiceOutput: z.enum(['gpt_realtime_audio', 'rowboat_configured']),
       rowboatBillingEnforced: z.boolean(),
     }),
   },
@@ -121,21 +137,73 @@ const ipcSchemas = {
       textProvider: z.enum(['codex_oauth', 'rowboat_configured']),
       voiceProvider: z.enum(['gpt-realtime-2.1', 'rowboat_configured']),
       voiceAuthMode: z.enum(['chatgpt_oauth', 'rowboat_configured']),
-      voiceOutput: z.enum(['pocket_tts', 'rowboat_configured']),
+      voiceOutput: z.enum(['gpt_realtime_audio', 'rowboat_configured']),
       rowboatBillingEnforced: z.boolean(),
     }),
   },
-  'jarvis:getManagedVoiceStatus': {
+  'rowboatRealtimeVoice:getAuthStatus': {
     req: z.null(),
-    res: JarvisManagedVoiceStatusSchema,
+    res: z.object({
+      signedIn: z.boolean(),
+      storageReady: z.boolean(),
+    }).merge(RowboatRealtimeVoiceIdentitySchema),
   },
-  'jarvis:requestManagedVoice': {
+  'rowboatRealtimeVoice:signIn': {
+    req: z.null(),
+    res: z.object({
+      signedIn: z.boolean(),
+      cancelled: z.boolean().optional(),
+      error: z.string().optional(),
+    }),
+  },
+  'rowboatRealtimeVoice:cancelSignIn': {
+    req: z.null(),
+    res: z.object({ success: z.literal(true) }),
+  },
+  'rowboatRealtimeVoice:signOut': {
+    req: z.null(),
+    res: z.object({ success: z.literal(true) }),
+  },
+  'rowboatRealtimeVoice:prepare': {
+    req: z.null(),
+    res: z.union([
+      z.object({
+        ok: z.literal(true),
+        sessionId: z.string().uuid(),
+        generation: z.number().int().positive(),
+      }).merge(RowboatRealtimeVoiceIdentitySchema),
+      RowboatRealtimeVoiceFailureResultSchema,
+    ]),
+  },
+  'rowboatRealtimeVoice:negotiate': {
     req: z.object({
-      action: z.enum(['start', 'stop']),
+      sessionId: z.string().uuid(),
+      generation: z.number().int().positive(),
+      sdp: z.string().min(3).max(262144),
     }),
-    res: JarvisManagedVoiceStatusSchema.extend({
-      accepted: z.boolean(),
+    res: z.union([
+      z.object({
+        ok: z.literal(true),
+        sessionId: z.string().uuid(),
+        generation: z.number().int().positive(),
+        answerSdp: z.string().min(3).max(262144),
+        provider: z.literal('gpt-realtime-2.1'),
+      }),
+      RowboatRealtimeVoiceFailureResultSchema,
+    ]),
+  },
+  'rowboatRealtimeVoice:stop': {
+    req: z.object({
+      sessionId: z.string().uuid(),
+      generation: z.number().int().positive(),
     }),
+    res: z.object({ ok: z.literal(true) }),
+  },
+  'rowboatRealtimeVoice:revoked': {
+    req: z.object({
+      reason: z.enum(['sign_out', 'authority_changed']),
+    }),
+    res: z.null(),
   },
   'jarvis:executionAuthorityChanged': {
     req: z.object({
@@ -145,7 +213,7 @@ const ipcSchemas = {
       textProvider: z.enum(['codex_oauth', 'rowboat_configured']),
       voiceProvider: z.enum(['gpt-realtime-2.1', 'rowboat_configured']),
       voiceAuthMode: z.enum(['chatgpt_oauth', 'rowboat_configured']),
-      voiceOutput: z.enum(['pocket_tts', 'rowboat_configured']),
+      voiceOutput: z.enum(['gpt_realtime_audio', 'rowboat_configured']),
       rowboatBillingEnforced: z.boolean(),
     }),
     res: z.null(),
@@ -2230,6 +2298,8 @@ const ipcSchemas = {
       interimText: z.string().nullable(),
       // A quick ⌘ tap locked hands-free capture (until the next tap).
       pttLocked: z.boolean(),
+      // My OAuth Realtime uses continuous VAD instead of a PTT gate.
+      continuousListening: z.boolean(),
       // Latest assistant reply of this call (streaming) — readable in the
       // pill's response panel without switching back to the app.
       responseText: z.string().nullable(),
@@ -2259,6 +2329,7 @@ const ipcSchemas = {
           screenSharing: z.boolean(),
           interimText: z.string().nullable(),
           pttLocked: z.boolean(),
+          continuousListening: z.boolean(),
           responseText: z.string().nullable(),
           questionText: z.string().nullable(),
         })
@@ -2287,6 +2358,7 @@ const ipcSchemas = {
       screenSharing: z.boolean(),
       interimText: z.string().nullable(),
       pttLocked: z.boolean(),
+      continuousListening: z.boolean(),
       responseText: z.string().nullable(),
       questionText: z.string().nullable(),
     }),

@@ -258,10 +258,10 @@ export async function startJarvisBridge({
           plan: executionAuthority.managed
             ? {
                 source: "jarvis_codex_oauth",
-                label: "My JARVIS OAuth",
+                label: "My OAuth",
                 constrained: false,
                 billingEnforced: false,
-                detail: "Your Codex OAuth provider calls the signed-in ChatGPT/Codex backend directly. Rowboat gateway plan and credit limits are not consulted.",
+                detail: "Codex OAuth authorizes text, while Rowboat owns a separate ChatGPT OAuth GPT Realtime voice lane. Rowboat Hosted plan limits are not consulted; the OAuth account's own limits may still apply.",
               }
             : {
                 source: "rowboat_hosted",
@@ -331,7 +331,7 @@ export async function startJarvisBridge({
         if (!getJarvisExecutionAuthority().managed) {
           writeJson(response, 409, {
             protocol: PROTOCOL,
-            error: "Switch execution authority to My JARVIS OAuth before enforcing a Codex model profile.",
+            error: "Switch execution authority to My OAuth before enforcing a Codex model profile.",
           });
           return;
         }
@@ -388,7 +388,7 @@ export async function startJarvisBridge({
         if (!getJarvisExecutionAuthority().managed) {
           writeJson(response, 409, {
             protocol: PROTOCOL,
-            error: "Rowboat delegation through JARVIS requires the My JARVIS OAuth authority toggle.",
+            error: "Rowboat delegation through JARVIS requires the My OAuth authority toggle.",
           });
           return;
         }

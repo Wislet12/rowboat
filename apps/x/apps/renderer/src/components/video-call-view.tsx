@@ -34,6 +34,8 @@ interface VideoCallViewProps {
   /** Push-to-talk gate: 'held' while the key/button is down, 'locked' after
    *  a quick tap (hands-free until the next tap). */
   pttStatus: PttStatus
+  /** My OAuth Realtime keeps the microphone live and uses VAD/barge-in. */
+  continuousListening?: boolean
   /** Press/release edges of the on-screen talk button. */
   onPttDown: () => void
   onPttUp: () => void
@@ -74,6 +76,7 @@ export function VideoCallView({
   getTtsLevel,
   status,
   pttStatus,
+  continuousListening = false,
   onPttDown,
   onPttUp,
   interimText,
@@ -206,6 +209,15 @@ export function VideoCallView({
               <span className="block h-2 w-2 rounded-full bg-red-500" />
               Muted
             </>
+          ) : continuousListening ? (
+            <>
+              <span className={cn('block h-2 w-2 rounded-full', STATUS_DISPLAY[status].dotClass)} />
+              {status === 'idle'
+                ? 'Live · speak naturally'
+                : status === 'listening'
+                  ? 'Listening · interrupt anytime'
+                  : STATUS_DISPLAY[status].label}
+            </>
           ) : pttStatus === 'locked' ? (
             <>
               <span className="block h-2 w-2 rounded-full bg-green-500 animate-pulse" />
@@ -221,7 +233,7 @@ export function VideoCallView({
         {/* On-screen push-to-talk: hold to talk, quick tap to lock
             hands-free — mirrors the Right ⌘ key. Pointer capture keeps the
             release edge even if the cursor slides off mid-hold. */}
-        <Tooltip>
+        {!continuousListening && <Tooltip>
           <TooltipTrigger asChild>
             <button
               type="button"
@@ -246,7 +258,7 @@ export function VideoCallView({
             </button>
           </TooltipTrigger>
           <TooltipContent className="z-[110]">Hold to talk (tap to go hands-free) — or hold the right ⌘ key</TooltipContent>
-        </Tooltip>
+        </Tooltip>}
         <Tooltip>
           <TooltipTrigger asChild>
             <button

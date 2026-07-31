@@ -192,7 +192,8 @@ interface ChatSidebarProps {
   onStartCall?: (preset: CallPreset) => void
   onEndCall?: () => void
   callAvailable?: boolean
-  managedCall?: boolean
+  realtimeOAuthCall?: boolean
+  callConnectionState?: string
   onComposioConnected?: (toolkitSlug: string) => void
 }
 
@@ -259,7 +260,8 @@ export function ChatSidebar({
   onStartCall,
   onEndCall,
   callAvailable,
-  managedCall,
+  realtimeOAuthCall,
+  callConnectionState,
   onComposioConnected,
 }: ChatSidebarProps) {
   const executionAuthority = useJarvisExecutionAuthority()
@@ -807,7 +809,8 @@ export function ChatSidebar({
                           onStartCall={isActive ? onStartCall : undefined}
                           onEndCall={isActive ? onEndCall : undefined}
                           callAvailable={callAvailable}
-                          managedCall={managedCall}
+                          realtimeOAuthCall={realtimeOAuthCall}
+                          callConnectionState={callConnectionState}
                         />
                       </div>
                     )

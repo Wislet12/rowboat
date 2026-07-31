@@ -16,7 +16,7 @@ export type JarvisExecutionAuthority = {
   textProvider: "codex_oauth" | "rowboat_configured";
   voiceProvider: "gpt-realtime-2.1" | "rowboat_configured";
   voiceAuthMode: "chatgpt_oauth" | "rowboat_configured";
-  voiceOutput: "pocket_tts" | "rowboat_configured";
+  voiceOutput: "gpt_realtime_audio" | "rowboat_configured";
   rowboatBillingEnforced: boolean;
 };
 
@@ -40,12 +40,10 @@ type AuthorityTurnConfig = {
   [key: string]: unknown;
 };
 
-const jarvisOauthAvailable =
-  process.env.ROWBOAT_JARVIS_OAUTH_AVAILABLE === "true"
-  || (
-    process.env.ROWBOAT_USE_CODEX_AUTH === "true"
-    && process.env.ROWBOAT_JARVIS_CODEX_UNMETERED === "true"
-  );
+// My OAuth is a Rowboat feature in both the integrated and direct desktop
+// launch. The text lane still verifies the actual Codex OAuth session before
+// switching; this flag only allows an administrator to disable the feature.
+const jarvisOauthAvailable = process.env.ROWBOAT_MY_OAUTH_AVAILABLE !== "false";
 
 const savedMode = loadAppSettings().rowboatExecutionAuthorityMode;
 let selectedMode: JarvisExecutionAuthorityMode =
@@ -118,7 +116,7 @@ export function getJarvisExecutionAuthority(): JarvisExecutionAuthority {
     textProvider: managed ? "codex_oauth" : "rowboat_configured",
     voiceProvider: managed ? "gpt-realtime-2.1" : "rowboat_configured",
     voiceAuthMode: managed ? "chatgpt_oauth" : "rowboat_configured",
-    voiceOutput: managed ? "pocket_tts" : "rowboat_configured",
+    voiceOutput: managed ? "gpt_realtime_audio" : "rowboat_configured",
     // This controls Rowboat's hosted-plan surfaces only. Real provider
     // transport errors remain visible as normal chat errors.
     rowboatBillingEnforced: !managed,
@@ -137,7 +135,7 @@ export async function setJarvisExecutionAuthority(
 ): Promise<JarvisExecutionAuthority> {
   if (mode === "jarvis_oauth" && !jarvisOauthAvailable) {
     throw new Error(
-      "My JARVIS OAuth is unavailable in this launch. Open Rowboat from JARVIS or the managed Rowboat desktop shortcut.",
+      "My OAuth is unavailable in this launch.",
     );
   }
   if (mode === selectedMode) return getJarvisExecutionAuthority();
