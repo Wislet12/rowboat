@@ -106,6 +106,7 @@ export function convertFromMessages(messages: z.infer<typeof Message>[]): ModelM
                     type EncodedImagePart = { type: "file"; data: string; mediaType: string };
                     const cameraParts: EncodedImagePart[] = [];
                     const screenParts: EncodedImagePart[] = [];
+                    const clipboardParts: EncodedImagePart[] = [];
                     const frameTimes: string[] = [];
 
                     for (const part of msg.content) {
@@ -114,7 +115,11 @@ export function convertFromMessages(messages: z.infer<typeof Message>[]): ModelM
                             const lineStr = part.lineNumber ? ` (line ${part.lineNumber})` : '';
                             attachmentLines.push(`- ${part.filename} (${part.mimeType}${sizeStr}) at ${part.path}${lineStr}`);
                         } else if (part.type === "image") {
-                            const target = part.source === "screen" ? screenParts : cameraParts;
+                            const target = part.source === "screen"
+                                ? screenParts
+                                : part.source === "clipboard"
+                                    ? clipboardParts
+                                    : cameraParts;
                             target.push({ type: "file", data: part.data, mediaType: part.mediaType });
                             if (part.capturedAt) frameTimes.push(part.capturedAt);
                         } else {
@@ -130,7 +135,7 @@ export function convertFromMessages(messages: z.infer<typeof Message>[]): ModelM
                         }
                     }
 
-                    const imageCount = cameraParts.length + screenParts.length;
+                    const imageCount = cameraParts.length + screenParts.length + clipboardParts.length;
                     if (imageCount > 0) {
                         const span = frameTimes.length >= 2
                             ? ` spanning ${frameTimes[0]} to ${frameTimes[frameTimes.length - 1]}`
@@ -140,7 +145,8 @@ export function convertFromMessages(messages: z.infer<typeof Message>[]): ModelM
                         const kinds: string[] = [];
                         if (cameraParts.length > 0) kinds.push(`${cameraParts.length} live webcam frame${cameraParts.length === 1 ? '' : 's'} of the user`);
                         if (screenParts.length > 0) kinds.push(`${screenParts.length} frame${screenParts.length === 1 ? '' : 's'} of the user's shared screen`);
-                        textSegments.push(`[Video mode: ${kinds.join(' and ')} attached below, each group oldest to newest,${span ? span + ',' : ''} recorded while they composed this message.]`);
+                        if (clipboardParts.length > 0) kinds.push(`${clipboardParts.length} screenshot${clipboardParts.length === 1 ? '' : 's'} pasted from the clipboard`);
+                        textSegments.push(`[Visual context: ${kinds.join(' and ')} attached below${cameraParts.length + screenParts.length > 0 ? ', with live-frame groups ordered oldest to newest' : ''}${span ? `,${span}` : ''}.]`);
                         const content: Array<{ type: "text"; text: string } | EncodedImagePart> = [
                             { type: "text", text: textSegments.join("\n") },
                         ];
@@ -149,6 +155,9 @@ export function convertFromMessages(messages: z.infer<typeof Message>[]): ModelM
                         }
                         if (screenParts.length > 0) {
                             content.push({ type: "text", text: "Screen-share frames (oldest to newest):" }, ...screenParts);
+                        }
+                        if (clipboardParts.length > 0) {
+                            content.push({ type: "text", text: "Pasted screenshots:" }, ...clipboardParts);
                         }
                         result.push({
                             role: "user",

@@ -104,6 +104,7 @@ import { defaultRemarkPlugins } from 'streamdown'
 import remarkBreaks from 'remark-breaks'
 import { TabBar, type ChatTab, type FileTab } from '@/components/tab-bar'
 import { CaffeinateIndicator } from '@/components/caffeinate-indicator'
+import { NoteActions } from '@/components/note-actions'
 import {
   type ChatMessage,
   type ChatViewportAnchorState,
@@ -3753,7 +3754,7 @@ function App() {
               type: 'image'
               data: string
               mediaType: string
-              source: 'camera' | 'screen'
+              source: 'camera' | 'screen' | 'clipboard'
               capturedAt: string
             }
 
@@ -3772,13 +3773,23 @@ function App() {
         }
 
         for (const attachment of stagedAttachments) {
-          contentParts.push({
-            type: 'attachment',
-            path: attachment.path,
-            filename: attachment.filename,
-            mimeType: attachment.mimeType,
-            size: attachment.size,
-          })
+          if (attachment.dataBase64 && attachment.isImage) {
+            contentParts.push({
+              type: 'image',
+              data: attachment.dataBase64,
+              mediaType: attachment.mimeType,
+              source: 'clipboard',
+              capturedAt: attachment.capturedAt ?? new Date().toISOString(),
+            })
+          } else {
+            contentParts.push({
+              type: 'attachment',
+              path: attachment.path,
+              filename: attachment.filename,
+              mimeType: attachment.mimeType,
+              size: attachment.size,
+            })
+          }
         }
 
         if (userMessage) {
@@ -6363,6 +6374,27 @@ function App() {
         document.body.removeChild(textarea)
       })
     },
+    copyNote: async (path: string) => {
+      const content = selectedPath === path
+        ? joinFrontmatter(
+            frontmatterByPathRef.current.get(path) ?? null,
+            editorContentByPathRef.current.get(path) ?? editorContentRef.current,
+          )
+        : (await window.ipc.invoke('workspace:readFile', { path, encoding: 'utf8' })).data
+      try {
+        await navigator.clipboard.writeText(content)
+      } catch {
+        const textarea = document.createElement('textarea')
+        textarea.value = content
+        textarea.style.position = 'fixed'
+        textarea.style.opacity = '0'
+        document.body.appendChild(textarea)
+        textarea.select()
+        const copied = document.execCommand('copy')
+        document.body.removeChild(textarea)
+        if (!copied) throw new Error('Clipboard write was rejected.')
+      }
+    },
     revealInFileManager: (path: string, isDir: boolean) => {
       const channel = isDir ? 'shell:openPath' : 'shell:showItemInFolder'
       void window.ipc.invoke(channel, { path }).catch((err) => {
@@ -7230,6 +7262,17 @@ function App() {
                     <TooltipContent side="bottom">Version history</TooltipContent>
                   </Tooltip>
                 )}
+                {selectedPath && selectedPath.startsWith('knowledge/') && selectedPath.endsWith('.md') && (
+                  <NoteActions
+                    path={selectedPath}
+                    name={getBaseName(selectedPath)}
+                    className="titlebar-no-drag self-center"
+                    onEdit={() => navigateToFile(selectedPath)}
+                    onCopy={() => knowledgeActions.copyNote(selectedPath)}
+                    onRename={(name) => knowledgeActions.rename(selectedPath, name, false)}
+                    onDelete={() => knowledgeActions.remove(selectedPath)}
+                  />
+                )}
                 {!isFullScreenChat && !selectedPath && !isGraphOpen && !isSuggestedTopicsOpen && !isMeetingsOpen && !isLiveNotesOpen && !isBgTasksOpen && !isAppsOpen && !isEmailOpen && !isWorkspaceOpen && !isKnowledgeViewOpen && !isChatHistoryOpen && !isCodeOpen && !selectedTask && !isBrowserOpen && (
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -7320,6 +7363,9 @@ function App() {
                 <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
                   <MeetingsView
                     onOpenNote={(path) => navigateToFile(path)}
+                    onCopyNote={(path) => knowledgeActions.copyNote(path)}
+                    onRenameNote={(path, name) => knowledgeActions.rename(path, name, false)}
+                    onDeleteNote={(path) => knowledgeActions.remove(path)}
                     onTakeMeetingNotes={() => { void handleToggleMeeting() }}
                     meetingState={meetingTranscription.state}
                     meetingSummarizing={meetingSummarizing}
@@ -7398,6 +7444,7 @@ function App() {
                       rename: knowledgeActions.rename,
                       remove: knowledgeActions.remove,
                       copyPath: knowledgeActions.copyPath,
+                      copyNote: knowledgeActions.copyNote,
                       revealInFileManager: knowledgeActions.revealInFileManager,
                       onOpenInNewTab: knowledgeActions.onOpenInNewTab,
                     }}

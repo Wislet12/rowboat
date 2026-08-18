@@ -11,6 +11,7 @@ import * as analytics from '@/lib/analytics'
 import { extractConferenceLink } from '@/lib/calendar-event'
 import { cn } from '@/lib/utils'
 import type { MeetingTranscriptionState } from '@/hooks/useMeetingTranscription'
+import { NoteActions } from '@/components/note-actions'
 
 const MEETINGS_ROOT = 'knowledge/Meetings'
 const CALENDAR_DIR = 'calendar_sync'
@@ -58,6 +59,9 @@ type MeetingNoteRow = {
 
 type MeetingsViewProps = {
   onOpenNote: (path: string) => void
+  onCopyNote: (path: string) => Promise<void>
+  onRenameNote: (path: string, name: string) => Promise<void>
+  onDeleteNote: (path: string) => Promise<void>
   onTakeMeetingNotes: () => void
   meetingState: MeetingTranscriptionState
   meetingSummarizing?: boolean
@@ -1144,7 +1148,15 @@ function getMeetingButtonLabel(state: MeetingTranscriptionState): string {
   }
 }
 
-export function MeetingsView({ onOpenNote, onTakeMeetingNotes, meetingState, meetingSummarizing = false }: MeetingsViewProps) {
+export function MeetingsView({
+  onOpenNote,
+  onCopyNote,
+  onRenameNote,
+  onDeleteNote,
+  onTakeMeetingNotes,
+  meetingState,
+  meetingSummarizing = false,
+}: MeetingsViewProps) {
   const [notes, setNotes] = useState<MeetingNoteRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -1294,15 +1306,17 @@ export function MeetingsView({ onOpenNote, onTakeMeetingNotes, meetingState, mee
           <div className="overflow-hidden rounded-xl border border-border/60 bg-card">
             <table className="w-full table-fixed border-collapse">
               <colgroup>
-                <col className="w-[56%]" />
-                <col className="w-[20%]" />
-                <col className="w-[24%]" />
+                <col className="w-[45%]" />
+                <col className="w-[18%]" />
+                <col className="w-[19%]" />
+                <col className="w-[18%]" />
               </colgroup>
               <thead>
                 <tr className="border-b border-border/60 bg-muted/30 text-left">
                   <th className="px-4 py-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">Note</th>
                   <th className="px-4 py-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">Date</th>
                   <th className="px-4 py-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">Updated</th>
+                  <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wide text-muted-foreground">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -1320,6 +1334,17 @@ export function MeetingsView({ onOpenNote, onTakeMeetingNotes, meetingState, mee
                     <td className="px-4 py-3 align-top text-sm text-muted-foreground">{note.dateLabel}</td>
                     <td className="px-4 py-3 align-top text-sm text-muted-foreground">
                       {note.mtimeMs > 0 ? (formatRelativeTime(new Date(note.mtimeMs).toISOString()) || '—') : '—'}
+                    </td>
+                    <td className="px-3 py-2 align-middle">
+                      <NoteActions
+                        path={note.path}
+                        name={note.name}
+                        className="justify-end"
+                        onEdit={() => { analytics.meetingNoteOpened(); onOpenNote(note.path) }}
+                        onCopy={() => onCopyNote(note.path)}
+                        onRename={(name) => onRenameNote(note.path, name)}
+                        onDelete={() => onDeleteNote(note.path)}
+                      />
                     </td>
                   </tr>
                 ))}

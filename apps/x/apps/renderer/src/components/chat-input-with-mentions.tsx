@@ -61,6 +61,11 @@ import {
   usePromptInputController,
 } from '@/components/ai-elements/prompt-input'
 import { toast } from 'sonner'
+import {
+  clipboardScreenshotName,
+  isSupportedClipboardScreenshot,
+  readClipboardScreenshot,
+} from '@/lib/clipboard-screenshot'
 
 export type StagedAttachment = {
   id: string
@@ -70,6 +75,9 @@ export type StagedAttachment = {
   isImage: boolean
   size: number
   thumbnailUrl?: string
+  /** Inline image bytes for clipboard screenshots, which have no filesystem path. */
+  dataBase64?: string
+  capturedAt?: string
 }
 
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024 // 10MB
@@ -626,6 +634,47 @@ function ChatInputInner({
     }
   }, [])
 
+  const addClipboardScreenshots = useCallback(async (files: File[]) => {
+    const capturedAt = new Date()
+    const newAttachments: StagedAttachment[] = []
+    for (const [index, file] of files.entries()) {
+      if (!isSupportedClipboardScreenshot(file)) continue
+      if (file.size > MAX_ATTACHMENT_SIZE) {
+        toast.error('Screenshot too large (max 10MB)')
+        continue
+      }
+      try {
+        const image = await readClipboardScreenshot(file)
+        newAttachments.push({
+          id: `paste-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+          path: '',
+          filename: clipboardScreenshotName(file, index, capturedAt),
+          mimeType: file.type,
+          isImage: true,
+          size: file.size,
+          thumbnailUrl: image.dataUrl,
+          dataBase64: image.dataBase64,
+          capturedAt: capturedAt.toISOString(),
+        })
+      } catch (err) {
+        console.error('Failed to read pasted screenshot:', err)
+        toast.error('Failed to paste screenshot')
+      }
+    }
+    if (newAttachments.length > 0) {
+      setAttachments((prev) => [...prev, ...newAttachments])
+      setFocusNonce((value) => value + 1)
+    }
+  }, [])
+
+  const handlePaste = useCallback((event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.clipboardData?.files ?? [])
+      .filter(isSupportedClipboardScreenshot)
+    if (files.length === 0) return
+    event.preventDefault()
+    void addClipboardScreenshots(files)
+  }, [addClipboardScreenshots])
+
   const removeAttachment = useCallback((id: string) => {
     setAttachments((prev) => prev.filter((attachment) => attachment.id !== id))
   }, [])
@@ -794,6 +843,7 @@ function ChatInputInner({
         <PromptInputTextarea
           placeholder="Type your message..."
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           autoFocus={isActive}
           focusTrigger={isActive ? `${runId ?? 'new'}:${focusNonce}` : undefined}
           className="min-h-6 rounded-none border-0 py-0 shadow-none focus-visible:ring-0"

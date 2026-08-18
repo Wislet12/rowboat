@@ -159,7 +159,7 @@ function toolTurnLog(
     ];
 }
 
-function frame(source: "camera" | "screen") {
+function frame(source: "camera" | "screen" | "clipboard") {
     return {
         type: "image" as const,
         data: "aGVsbG8=".repeat(50),
@@ -233,6 +233,7 @@ describe("elideHistoricImages", () => {
                 frame("camera"),
                 frame("camera"),
                 frame("screen"),
+                frame("clipboard"),
             ],
         };
         const [elided] = elideHistoricImages([message]);
@@ -245,6 +246,7 @@ describe("elideHistoricImages", () => {
         if (placeholder.type !== "text") throw new Error("expected text placeholder");
         expect(placeholder.text).toContain("2 webcam frames");
         expect(placeholder.text).toContain("1 screen-share frame");
+        expect(placeholder.text).toContain("1 pasted screenshot");
     });
 
     it("leaves string-content and image-free user messages untouched", () => {

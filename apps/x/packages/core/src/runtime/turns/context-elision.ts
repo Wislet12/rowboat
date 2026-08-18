@@ -137,11 +137,13 @@ export function elideHistoricImages(
         if (images.length === 0) {
             return message;
         }
-        const camera = images.filter((part) => part.source !== "screen").length;
-        const screen = images.length - camera;
+        const camera = images.filter((part) => part.source !== "screen" && part.source !== "clipboard").length;
+        const screen = images.filter((part) => part.source === "screen").length;
+        const clipboard = images.filter((part) => part.source === "clipboard").length;
         const kinds = [
             ...(camera > 0 ? [`${camera} webcam frame${camera === 1 ? "" : "s"}`] : []),
             ...(screen > 0 ? [`${screen} screen-share frame${screen === 1 ? "" : "s"}`] : []),
+            ...(clipboard > 0 ? [`${clipboard} pasted screenshot${clipboard === 1 ? "" : "s"}`] : []),
         ].join(" and ");
         return {
             ...message,

@@ -67,10 +67,12 @@ export function runLogToConversation(log: RunLog): ConversationItem[] {
               })),
               ...imageParts.map((p, index) => ({
                 path: '',
-                filename: `${p.source === 'screen' ? 'screen' : 'camera'}-frame-${index + 1}.jpg`,
+                filename: p.source === 'clipboard'
+                  ? `pasted-screenshot-${index + 1}.${p.mediaType === 'image/png' ? 'png' : p.mediaType === 'image/webp' ? 'webp' : 'jpg'}`
+                  : `${p.source === 'screen' ? 'screen' : 'camera'}-frame-${index + 1}.jpg`,
                 mimeType: p.mediaType || 'image/jpeg',
                 thumbnailUrl: `data:${p.mediaType || 'image/jpeg'};base64,${p.data}`,
-                isVideoFrame: true,
+                isVideoFrame: p.source !== 'clipboard',
               })),
             ]
           }

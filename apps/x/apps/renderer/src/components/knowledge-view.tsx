@@ -23,6 +23,7 @@ import {
 } from '@/components/ui/context-menu'
 import { Input } from '@/components/ui/input'
 import { VoiceNoteButton } from '@/components/sidebar-content'
+import { NoteActions } from '@/components/note-actions'
 import { formatRelativeTime } from '@/lib/relative-time'
 import { toast } from '@/lib/toast'
 import { cn } from '@/lib/utils'
@@ -42,6 +43,7 @@ export type KnowledgeViewActions = {
   rename: (path: string, newName: string, isDir: boolean) => Promise<void>
   remove: (path: string) => Promise<void>
   copyPath: (path: string) => void
+  copyNote: (path: string) => Promise<void>
   revealInFileManager: (path: string, isDir: boolean) => void
   onOpenInNewTab?: (path: string) => void
 }
@@ -655,6 +657,16 @@ function ItemRow({
         <span className="tabular-nums whitespace-nowrap">
           {modified}
         </span>
+        {!isDir && (
+          <NoteActions
+            path={node.path}
+            name={node.name}
+            onEdit={() => onOpenNote(node.path)}
+            onCopy={() => actions.copyNote(node.path)}
+            onRename={(name) => actions.rename(node.path, name, false)}
+            onDelete={() => actions.remove(node.path)}
+          />
+        )}
         {isDir && (
           <ChevronRight className="size-4 text-muted-foreground/40 opacity-0 transition-opacity group-hover:opacity-100" />
         )}
