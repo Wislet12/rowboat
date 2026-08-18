@@ -15,6 +15,7 @@ import {
   Message,
   MessageContent,
   MessageCopyButton,
+  MessageDownloadButton,
   MessageResponse,
 } from '@/components/ai-elements/message'
 import { TurnActivityIndicator } from '@/components/turn-activity-indicator'
@@ -443,6 +444,10 @@ export function ChatSidebar({
           <MessageContent>
             <MessageResponse components={streamdownComponents}>{item.content}</MessageResponse>
           </MessageContent>
+          <div className="flex items-center gap-0.5">
+            <MessageCopyButton text={item.content} />
+            <MessageDownloadButton text={item.content} title={`Chat response ${item.id}`} />
+          </div>
         </Message>
       )
     }

@@ -55,6 +55,7 @@ import {
   Message,
   MessageContent,
   MessageCopyButton,
+  MessageDownloadButton,
   MessageResponse,
 } from '@/components/ai-elements/message';
 import {
@@ -89,11 +90,11 @@ import { CreditCelebration } from "@/components/credit-celebration"
 import { matchBillingError, type BillingErrorMatch } from "@/lib/billing-error"
 import { dispatchCreditExhausted, dispatchCreditReplenished } from "@/lib/credit-status"
 import { ensureMarkdownExtension, normalizeWikiPath, splitWikiFragment, stripKnowledgePrefix, toKnowledgePath, wikiLabel } from '@/lib/wiki-links'
-import { splitFrontmatter, joinFrontmatter } from '@/lib/frontmatter'
+import { extractAllFrontmatterValues, splitFrontmatter, joinFrontmatter } from '@/lib/frontmatter'
 import { extractConferenceLink } from '@/lib/calendar-event'
 import { OnboardingModal } from '@/components/onboarding'
 import { ComposioGoogleMigrationModal } from '@/components/composio-google-migration-modal'
-import { CommandPalette, type CommandPaletteMention, type SearchType } from '@/components/search-dialog'
+import { CommandPalette, type CommandPaletteMention, type KnowledgeSearchScope, type SearchType } from '@/components/search-dialog'
 import { LiveNoteSidebar } from '@/components/live-note-sidebar'
 import { BackgroundTaskDetail } from '@/components/background-task-detail'
 import { BrowserPane } from '@/components/browser-pane/BrowserPane'
@@ -997,6 +998,7 @@ function App() {
 
   // Frontmatter state: store raw frontmatter per file path
   const frontmatterByPathRef = useRef<Map<string, string | null>>(new Map())
+  const activeNoteContextPathRef = useRef<string | null>(null)
 
   // Version history state
   const [versionHistoryPath, setVersionHistoryPath] = useState<string | null>(null)
@@ -2351,6 +2353,8 @@ function App() {
   const [isSearchOpen, setIsSearchOpen] = useState(false)
   // Optional scope override for the next time search opens (cleared on close).
   const [searchDefaultScope, setSearchDefaultScope] = useState<SearchType | undefined>(undefined)
+  const [searchKnowledgeScope, setSearchKnowledgeScope] = useState<KnowledgeSearchScope>('all')
+  const [searchInitialQuery, setSearchInitialQuery] = useState('')
 
   // Background tasks state
   type BackgroundTaskItem = {
@@ -2373,6 +2377,27 @@ function App() {
     selectedPathRef.current = selectedPath
     if (!selectedPath) {
       editorPathRef.current = null
+    }
+  }, [selectedPath])
+
+  // Active-note lifecycle: opening a markdown note replaces (never stacks
+  // with) the previous context. Consumers that need UI lifecycle visibility
+  // can subscribe to these events; model requests still re-authorize and
+  // rebuild the snapshot at send time below.
+  useEffect(() => {
+    const nextPath = selectedPath?.endsWith('.md') ? selectedPath : null
+    const previousPath = activeNoteContextPathRef.current
+    if (previousPath === nextPath) return
+    if (previousPath) {
+      window.dispatchEvent(new CustomEvent('rowboat:note-context-close', {
+        detail: { path: previousPath },
+      }))
+    }
+    activeNoteContextPathRef.current = nextPath
+    if (nextPath) {
+      window.dispatchEvent(new CustomEvent('rowboat:note-context-open', {
+        detail: { path: nextPath, replacedPath: previousPath },
+      }))
     }
   }, [selectedPath])
 
@@ -3544,8 +3569,27 @@ function App() {
   }, [handleRunEvent])
 
   type MiddlePaneContextPayload =
-    | { kind: 'note'; path: string; content: string }
-    | { kind: 'browser'; url: string; title: string }
+    | {
+        kind: 'note'
+        path: string
+        content: string
+        contextId: string
+        title: string
+        noteType: 'meeting' | 'brain'
+        metadata: Record<string, string | string[]>
+      }
+    | {
+        kind: 'browser'
+        url: string
+        title: string
+        tabId?: string
+        snapshotId?: string
+        text?: string
+        selectedText?: string
+        capturedAt?: string
+        metadata?: { description?: string; headings?: string[]; language?: string }
+        untrusted: true
+      }
   const buildMiddlePaneContext = async (): Promise<MiddlePaneContextPayload | undefined> => {
     // Nothing visible in the middle pane when the right pane is maximized.
     if (isRightPaneMaximized) return undefined
@@ -3553,10 +3597,35 @@ function App() {
     // Browser is an overlay on top of any note — when it's open, it's what the user is looking at.
     if (isBrowserOpen) {
       try {
+        // Capture a fresh, identity-bound page snapshot for every submit. This
+        // mirrors modern browser sidebars: current-tab context is automatic,
+        // selected text is precise context, and a navigation/tab switch
+        // invalidates the capture instead of leaking the previous page.
+        const context = await window.ipc.invoke('browser:getContext', null)
+        if (context.ok && context.page) {
+          return {
+            kind: 'browser',
+            url: context.page.url,
+            title: context.page.title,
+            tabId: context.tabId,
+            snapshotId: context.page.snapshotId,
+            text: context.page.text,
+            selectedText: context.selectedText,
+            capturedAt: context.capturedAt,
+            metadata: context.metadata,
+            untrusted: true,
+          }
+        }
         const state = await window.ipc.invoke('browser:getState', null)
         const activeTab = state.tabs.find((t) => t.id === state.activeTabId)
         if (activeTab) {
-          return { kind: 'browser', url: activeTab.url, title: activeTab.title }
+          return {
+            kind: 'browser',
+            url: activeTab.url,
+            title: activeTab.title,
+            tabId: activeTab.id,
+            untrusted: true,
+          }
         }
       } catch {
         // fall through to no-context if browser state is unavailable
@@ -3567,8 +3636,30 @@ function App() {
     // Note case: only markdown files are meaningfully readable as context.
     const path = selectedPathRef.current
     if (!path || !path.endsWith('.md')) return undefined
-    const content = editorContentRef.current ?? ''
-    return { kind: 'note', path, content }
+    try {
+      // workspace:readFile is the canonical permission/sandbox gate. Re-run it
+      // for every chat/voice turn so revoked notes immediately stop entering
+      // context. The editor body is then used to include unsaved local edits.
+      const result = await window.ipc.invoke('workspace:readFile', { path })
+      const { raw, body: persistedBody } = splitFrontmatter(result.data)
+      const content = editorPathRef.current === path
+        ? (editorContentRef.current ?? persistedBody)
+        : persistedBody
+      const normalizedPath = path.replace(/\\/g, '/')
+      const name = normalizedPath.split('/').pop() ?? normalizedPath
+      return {
+        kind: 'note',
+        path: normalizedPath,
+        content,
+        contextId: normalizedPath,
+        title: name.replace(/\.md$/i, ''),
+        noteType: normalizedPath.startsWith('knowledge/Meetings/') ? 'meeting' : 'brain',
+        metadata: extractAllFrontmatterValues(raw),
+      }
+    } catch (error) {
+      console.warn('[active-note-context] Current note is no longer readable; omitting it', path, error)
+      return undefined
+    }
   }
 
   const handlePromptSubmit = async (
@@ -5662,7 +5753,7 @@ function App() {
     // During a call, navigation must be VISIBLE: the full-screen call view
     // would cover the very thing being shown — collapse it to the pill —
     // and if the user is in another app, bring Rowboat forward.
-    const visibleActions = ['open-note', 'open-view', 'read-view', 'open-item', 'update-base-view', 'create-base']
+    const visibleActions = ['open-note', 'search-notes', 'open-view', 'read-view', 'open-item', 'update-base-view', 'create-base']
     if (inCallRef.current && visibleActions.includes(result.action as string)) {
       setCallMinimized(true)
       void window.ipc.invoke('app:focusMainWindow', null).catch(() => {})
@@ -5690,6 +5781,12 @@ function App() {
     switch (result.action) {
       case 'open-note':
         navigateToFile(result.path as string)
+        break
+      case 'search-notes':
+        setSearchDefaultScope('knowledge')
+        setSearchKnowledgeScope(result.noteScope === 'meetings' ? 'meetings' : 'all')
+        setSearchInitialQuery(typeof result.query === 'string' ? result.query : '')
+        setIsSearchOpen(true)
         break
       case 'open-view':
       case 'read-view':
@@ -6897,6 +6994,10 @@ function App() {
           <MessageContent>
             <MessageResponse components={streamdownComponents}>{item.content}</MessageResponse>
           </MessageContent>
+          <div className="flex items-center gap-0.5">
+            <MessageCopyButton text={item.content} />
+            <MessageDownloadButton text={item.content} title={`Chat response ${item.id}`} />
+          </div>
         </Message>
       )
     }
@@ -7367,6 +7468,12 @@ function App() {
                     onRenameNote={(path, name) => knowledgeActions.rename(path, name, false)}
                     onDeleteNote={(path) => knowledgeActions.remove(path)}
                     onTakeMeetingNotes={() => { void handleToggleMeeting() }}
+                    onSearchMeetingNotes={() => {
+                      setSearchDefaultScope('knowledge')
+                      setSearchKnowledgeScope('meetings')
+                      setSearchInitialQuery('')
+                      setIsSearchOpen(true)
+                    }}
                     meetingState={meetingTranscription.state}
                     meetingSummarizing={meetingSummarizing}
                   />
@@ -8085,8 +8192,17 @@ function App() {
         </div>
         <CommandPalette
           open={isSearchOpen}
-          onOpenChange={(o) => { setIsSearchOpen(o); if (!o) setSearchDefaultScope(undefined) }}
+          onOpenChange={(o) => {
+            setIsSearchOpen(o)
+            if (!o) {
+              setSearchDefaultScope(undefined)
+              setSearchKnowledgeScope('all')
+              setSearchInitialQuery('')
+            }
+          }}
           defaultScope={searchDefaultScope}
+          defaultKnowledgeScope={searchKnowledgeScope}
+          initialQuery={searchInitialQuery}
           onSelectFile={navigateToFile}
           onSelectRun={(id) => { void navigateToView({ type: 'chat', runId: id }) }}
         />

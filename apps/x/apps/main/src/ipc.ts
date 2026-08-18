@@ -2315,7 +2315,9 @@ export function setupIpcHandlers() {
       await sessionsIndexReady;
       const sessions = container.resolve<ISessions>('sessions').listSessions()
         .map((s) => ({ sessionId: s.sessionId, title: s.title }));
-      return search(args.query, args.limit, args.types, sessions);
+      return search(args.query, args.limit, args.types, sessions, {
+        knowledgeScope: args.knowledgeScope,
+      });
     },
     // Inline task schedule classification
     'export:note': async (event, args) => {
@@ -2324,6 +2326,8 @@ export function setupIpcHandlers() {
 
       const filterMap: Record<string, Electron.FileFilter[]> = {
         md: [{ name: 'Markdown', extensions: ['md'] }],
+        txt: [{ name: 'Plain Text', extensions: ['txt'] }],
+        html: [{ name: 'Web Page', extensions: ['html'] }],
         pdf: [{ name: 'PDF', extensions: ['pdf'] }],
         docx: [{ name: 'Word Document', extensions: ['docx'] }],
       };
@@ -2340,8 +2344,13 @@ export function setupIpcHandlers() {
 
       const filePath = result.filePath;
 
-      if (format === 'md') {
+      if (format === 'md' || format === 'txt') {
         await fs.writeFile(filePath, markdown, 'utf8');
+        return { success: true };
+      }
+
+      if (format === 'html') {
+        await fs.writeFile(filePath, markdownToHtml(markdown, sanitizedTitle), 'utf8');
         return { success: true };
       }
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Calendar, ChevronDown, ChevronRight, Clock, ExternalLink, FileText, Loader2, MapPin, Mic, Sparkles, Square, UserPlus, UserRound, UsersRound, Video, X } from 'lucide-react'
+import { Calendar, ChevronDown, ChevronRight, Clock, ExternalLink, FileText, Loader2, MapPin, Mic, Search, Sparkles, Square, UserPlus, UserRound, UsersRound, Video, X } from 'lucide-react'
 import { Streamdown } from 'streamdown'
 
 import { Button } from '@/components/ui/button'
@@ -63,6 +63,7 @@ type MeetingsViewProps = {
   onRenameNote: (path: string, name: string) => Promise<void>
   onDeleteNote: (path: string) => Promise<void>
   onTakeMeetingNotes: () => void
+  onSearchMeetingNotes: () => void
   meetingState: MeetingTranscriptionState
   meetingSummarizing?: boolean
 }
@@ -1154,6 +1155,7 @@ export function MeetingsView({
   onRenameNote,
   onDeleteNote,
   onTakeMeetingNotes,
+  onSearchMeetingNotes,
   meetingState,
   meetingSummarizing = false,
 }: MeetingsViewProps) {
@@ -1260,22 +1262,29 @@ export function MeetingsView({
       <div className="mx-auto w-full max-w-[1120px] shrink-0 px-[30px] pt-[34px] pb-5">
         <div className="flex items-center justify-between gap-4">
           <h2 className="text-[24px] font-[650] tracking-[-0.02em] text-[#0d0e11] dark:text-[#f4f5f7]">Meetings</h2>
-          <Button
-            type="button"
-            size="sm"
-            variant={isRecording ? 'destructive' : 'default'}
-            disabled={isBusy}
-            onClick={onTakeMeetingNotes}
-          >
-            {meetingSummarizing || meetingState === 'connecting' || meetingState === 'stopping' ? (
-              <Loader2 className="mr-2 size-4 animate-spin" />
-            ) : isRecording ? (
-              <Square className="mr-2 size-3.5" />
-            ) : (
-              <Mic className="mr-2 size-4" />
-            )}
-            {meetingSummarizing ? 'Generating notes...' : getMeetingButtonLabel(meetingState)}
-          </Button>
+
+          <div className="flex items-center gap-2">
+            <Button type="button" size="sm" variant="outline" onClick={onSearchMeetingNotes}>
+              <Search className="mr-2 size-4" />
+              Search notes
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant={isRecording ? 'destructive' : 'default'}
+              disabled={isBusy}
+              onClick={onTakeMeetingNotes}
+            >
+              {meetingSummarizing || meetingState === 'connecting' || meetingState === 'stopping' ? (
+                <Loader2 className="mr-2 size-4 animate-spin" />
+              ) : isRecording ? (
+                <Square className="mr-2 size-3.5" />
+              ) : (
+                <Mic className="mr-2 size-4" />
+              )}
+              {meetingSummarizing ? 'Generating notes...' : getMeetingButtonLabel(meetingState)}
+            </Button>
+          </div>
 	        </div>
         <p className="mt-1 text-[14px] text-black/50 dark:text-white/[0.52]">
           Upcoming events and meeting notes.

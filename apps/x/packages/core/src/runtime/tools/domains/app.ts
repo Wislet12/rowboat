@@ -15,16 +15,18 @@ import { formatTimestampForModel } from "@x/shared/dist/time.js";
 import { listTasks as listBackgroundTasks } from "../../../background-tasks/fileops.js";
 import type { ISessions } from "../../sessions/api.js";
 import { BuiltinToolsSchema } from "../types.js";
+import { search as searchWorkspace } from "../../../search/search.js";
 
 
 export const appNavigationTools: z.infer<typeof BuiltinToolsSchema> = {
     'app-navigation': {
         permission: "none",
-        description: 'Drive the Rowboat app UI: navigate to any view, read what a view contains (emails, background agents, chat history), open specific items (an email thread, a note, an agent, a past chat), filter/search the knowledge base, and manage saved views. Use it to SHOW the user things while telling them — navigation happens on their screen.',
+        description: 'Drive the Rowboat app UI: navigate to any view, search notes with a selectable result list, read what a view contains (emails, background agents, chat history), open specific items (an email thread, a note, an agent, a past chat), filter/search the knowledge base, and manage saved views. Use it to SHOW the user things while telling them — navigation happens on their screen.',
         inputSchema: z.object({
-            action: z.enum(["open-note", "open-view", "open-app", "read-view", "open-item", "update-base-view", "get-base-state", "create-base"]).describe("The navigation action to perform"),
+            action: z.enum(["open-note", "search-notes", "open-view", "open-app", "read-view", "open-item", "update-base-view", "get-base-state", "create-base"]).describe("The navigation action to perform"),
             // open-note
             path: z.string().optional().describe("Knowledge file path for open-note, e.g. knowledge/People/John.md"),
+            noteScope: z.enum(["all", "meetings"]).optional().describe("For search-notes: search all Brain/knowledge notes or only meeting notes (default all)"),
             // open-app
             appId: z.string().optional().describe("App folder slug under ~/.rowboat/apps (for open-app) — opens the app in the middle pane."),
             // open-view / read-view
@@ -76,6 +78,23 @@ export const appNavigationTools: z.infer<typeof BuiltinToolsSchema> = {
                     } catch {
                         return { success: false, error: `Could not access file: ${filePath}` };
                     }
+                }
+
+                case 'search-notes': {
+                    const query = String(input.query ?? '').trim();
+                    if (!query) return { success: false, error: 'search-notes requires a query' };
+                    const noteScope = input.noteScope === 'meetings' ? 'meetings' : 'all';
+                    const limit = (input.limit as number | undefined) ?? 20;
+                    const { results } = await searchWorkspace(query, limit, ['knowledge'], [], {
+                        knowledgeScope: noteScope,
+                    });
+                    return {
+                        success: true,
+                        action: 'search-notes',
+                        query,
+                        noteScope,
+                        results,
+                    };
                 }
 
                 case 'open-view': {

@@ -72,11 +72,28 @@ export const UserMessageContext = z.object({
             kind: z.literal("note"),
             path: z.string(),
             content: z.string(),
+            // Optional fields keep older clients/API payloads compatible while
+            // giving chat and voice a stable, explicit active-note snapshot.
+            contextId: z.string().optional(),
+            title: z.string().optional(),
+            noteType: z.enum(["meeting", "brain"]).optional(),
+            metadata: z.record(z.string(), z.union([z.string(), z.array(z.string())])).optional(),
         }),
         z.object({
             kind: z.literal("browser"),
             url: z.string(),
             title: z.string(),
+            tabId: z.string().optional(),
+            snapshotId: z.string().optional(),
+            text: z.string().optional(),
+            selectedText: z.string().optional(),
+            capturedAt: z.string().optional(),
+            metadata: z.object({
+                description: z.string().optional(),
+                headings: z.array(z.string()).optional(),
+                language: z.string().optional(),
+            }).optional(),
+            untrusted: z.boolean().optional(),
         }),
     ]).optional(),
 });

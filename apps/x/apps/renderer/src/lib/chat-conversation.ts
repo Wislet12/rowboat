@@ -277,6 +277,7 @@ export const getAppActionCardData = (tool: ToolCall): AppActionCardData | null =
     const action = input.action as string
     switch (action) {
       case 'open-note': return { action, label: `Opening ${(input.path as string || '').split('/').pop()?.replace(/\.md$/, '') || 'note'}...` }
+      case 'search-notes': return { action, label: `Searching ${(input.noteScope === 'meetings' ? 'meeting notes' : 'notes')}...` }
       case 'open-view': return { action, label: `Opening ${appViewLabel(input.view)}...` }
       case 'open-app': return { action, label: `Opening ${input.appId || 'app'}...` }
       case 'read-view': return { action, label: `Reading ${appViewLabel(input.view)}...` }
@@ -293,6 +294,13 @@ export const getAppActionCardData = (tool: ToolCall): AppActionCardData | null =
       const filePath = result.path as string || ''
       const name = filePath.split('/').pop()?.replace(/\.md$/, '') || 'note'
       return { action: 'open-note', label: `Opened ${name}` }
+    }
+    case 'search-notes': {
+      const count = (result.results as unknown[] | undefined)?.length ?? 0
+      return {
+        action: 'search-notes',
+        label: `Found ${count} ${result.noteScope === 'meetings' ? 'meeting note' : 'note'}${count === 1 ? '' : 's'}`,
+      }
     }
     case 'open-view':
       return { action: 'open-view', label: `Opened ${appViewLabel(result.view)}` }

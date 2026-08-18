@@ -19,6 +19,15 @@ const KNOWLEDGE_DIR = path.join(WorkDir, 'knowledge');
 const TURNS_DIR = path.join(WorkDir, 'storage', 'turns');
 
 type SearchType = 'knowledge' | 'chat';
+export type KnowledgeSearchScope = 'all' | 'meetings';
+
+export type SearchOptions = {
+  knowledgeScope?: KnowledgeSearchScope;
+  /** Optional policy hook for account/ACL-aware callers and deterministic tests. */
+  canAccessKnowledgePath?: (relativePath: string) => boolean | Promise<boolean>;
+  /** Injectable OS-readability probe; production defaults to fs.access(R_OK). */
+  canReadKnowledgeFile?: (absolutePath: string) => boolean | Promise<boolean>;
+};
 
 /** Minimal session metadata the caller passes in (from the sessions index). */
 export type ChatSessionMeta = {
@@ -37,6 +46,7 @@ export async function search(
   limit = 20,
   types?: SearchType[],
   chatSessions: ChatSessionMeta[] = [],
+  options: SearchOptions = {},
 ): Promise<{ results: SearchResult[] }> {
   const trimmed = query.trim();
   if (!trimmed) {
@@ -47,7 +57,7 @@ export async function search(
   const searchChatsEnabled = !types || types.includes('chat');
 
   const [knowledgeResults, chatResults] = await Promise.all([
-    searchKnowledgeEnabled ? searchKnowledge(trimmed, limit) : Promise.resolve([]),
+    searchKnowledgeEnabled ? searchKnowledge(trimmed, limit, options) : Promise.resolve([]),
     searchChatsEnabled ? searchChats(trimmed, limit, chatSessions) : Promise.resolve([]),
   ]);
 
@@ -58,8 +68,11 @@ export async function search(
 /**
  * Search knowledge markdown files by content and filename.
  */
-async function searchKnowledge(query: string, limit: number): Promise<SearchResult[]> {
-  if (!fs.existsSync(KNOWLEDGE_DIR)) {
+async function searchKnowledge(query: string, limit: number, options: SearchOptions): Promise<SearchResult[]> {
+  const searchRoot = options.knowledgeScope === 'meetings'
+    ? path.join(KNOWLEDGE_DIR, 'Meetings')
+    : KNOWLEDGE_DIR;
+  if (!fs.existsSync(searchRoot)) {
     return [];
   }
 
@@ -69,10 +82,11 @@ async function searchKnowledge(query: string, limit: number): Promise<SearchResu
 
   // Content search via grep
   try {
-    const grepMatches = await grepFiles(query, KNOWLEDGE_DIR, '*.md');
+    const grepMatches = await grepFiles(query, searchRoot, '*.md');
     for (const match of grepMatches) {
       if (results.length >= limit) break;
-      const relPath = path.relative(WorkDir, match.file);
+      const relPath = path.relative(WorkDir, match.file).replace(/\\/g, '/');
+      if (!await canAccessKnowledgeResult(relPath, options)) continue;
       if (seenPaths.has(relPath)) continue;
       seenPaths.add(relPath);
 
@@ -90,10 +104,11 @@ async function searchKnowledge(query: string, limit: number): Promise<SearchResu
 
   // Filename search — check files whose name matches the query
   try {
-    const allFiles = await listMarkdownFiles(KNOWLEDGE_DIR);
+    const allFiles = await listMarkdownFiles(searchRoot);
     for (const file of allFiles) {
       if (results.length >= limit) break;
-      const relPath = path.relative(WorkDir, file);
+      const relPath = path.relative(WorkDir, file).replace(/\\/g, '/');
+      if (!await canAccessKnowledgeResult(relPath, options)) continue;
       if (seenPaths.has(relPath)) continue;
 
       const basename = path.basename(file, '.md');
@@ -113,6 +128,34 @@ async function searchKnowledge(query: string, limit: number): Promise<SearchResu
   }
 
   return results;
+}
+
+/**
+ * Permission gate shared by content and filename matches. Search results are
+ * re-authorized on every query so a note disappears immediately after its
+ * read permission is revoked. The default policy is the workspace boundary
+ * plus an OS-level readability check; callers may layer account ACLs on top.
+ */
+export async function canAccessKnowledgeResult(
+  relativePath: string,
+  options: SearchOptions = {},
+): Promise<boolean> {
+  const normalized = relativePath.replace(/\\/g, '/');
+  if (!normalized.startsWith('knowledge/') || normalized.includes('../')) return false;
+  if (options.knowledgeScope === 'meetings' && !normalized.startsWith('knowledge/Meetings/')) return false;
+
+  const absolutePath = path.resolve(WorkDir, normalized);
+  const knowledgeRoot = path.resolve(KNOWLEDGE_DIR);
+  if (absolutePath !== knowledgeRoot && !absolutePath.startsWith(`${knowledgeRoot}${path.sep}`)) return false;
+
+  if (options.canAccessKnowledgePath && !await options.canAccessKnowledgePath(normalized)) return false;
+  if (options.canReadKnowledgeFile) return Boolean(await options.canReadKnowledgeFile(absolutePath));
+  try {
+    await fsp.access(absolutePath, fs.constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

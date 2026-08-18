@@ -19,7 +19,7 @@ import type { SessionBusEvent, SessionIndexEntry, SessionState } from './session
 import { RowboatApiConfig } from './rowboat-account.js';
 import { ZListToolkitsResponse } from './composio.js';
 import { AppSummarySchema, RegistryRecordSchema, RowboatAppManifestSchema } from './rowboat-app.js';
-import { BrowserStateSchema, DisplayMediaRequestSchema, HttpAuthRequestSchema } from './browser-control.js';
+import { BrowserPageSnapshotSchema, BrowserStateSchema, DisplayMediaRequestSchema, HttpAuthRequestSchema } from './browser-control.js';
 import { BillingInfoSchema } from './billing.js';
 import { CreditActivatedEventSchema, CreditsStateSchema, ReferralClaimResultSchema } from './credits.js';
 import { EmailBlockSchema, GmailThreadSchema } from './blocks.js';
@@ -2204,6 +2204,7 @@ const ipcSchemas = {
       query: z.string(),
       limit: z.number().optional(),
       types: z.array(z.enum(['knowledge', 'chat'])).optional(),
+      knowledgeScope: z.enum(['all', 'meetings']).optional(),
     }),
     res: z.object({
       results: z.array(z.object({
@@ -2437,7 +2438,7 @@ const ipcSchemas = {
   'export:note': {
     req: z.object({
       markdown: z.string(),
-      format: z.enum(['md', 'pdf', 'docx']),
+      format: z.enum(['md', 'txt', 'html', 'pdf', 'docx']),
       title: z.string(),
     }),
     res: z.object({
@@ -2720,6 +2721,22 @@ const ipcSchemas = {
   'browser:getState': {
     req: z.null(),
     res: BrowserStateSchema,
+  },
+  'browser:getContext': {
+    req: z.null(),
+    res: z.object({
+      ok: z.boolean(),
+      tabId: z.string().optional(),
+      capturedAt: z.string().optional(),
+      page: BrowserPageSnapshotSchema.optional(),
+      selectedText: z.string().optional(),
+      metadata: z.object({
+        description: z.string().optional(),
+        headings: z.array(z.string()),
+        language: z.string().optional(),
+      }).optional(),
+      error: z.string().optional(),
+    }),
   },
   'browser:didUpdateState': {
     req: BrowserStateSchema,

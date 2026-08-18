@@ -20,6 +20,7 @@ type BrowserHandlers = {
   'browser:forward': InvokeHandler<'browser:forward'>;
   'browser:reload': InvokeHandler<'browser:reload'>;
   'browser:getState': InvokeHandler<'browser:getState'>;
+  'browser:getContext': InvokeHandler<'browser:getContext'>;
   'browser:httpAuthResponse': InvokeHandler<'browser:httpAuthResponse'>;
   'browser:displayMediaResponse': InvokeHandler<'browser:displayMediaResponse'>;
 };
@@ -63,6 +64,9 @@ export const browserIpcHandlers: BrowserHandlers = {
   },
   'browser:getState': async () => {
     return browserViewManager.getState();
+  },
+  'browser:getContext': async () => {
+    return browserViewManager.readContext();
   },
   'browser:httpAuthResponse': async (_event, args) => {
     return browserViewManager.respondToHttpAuth(args);

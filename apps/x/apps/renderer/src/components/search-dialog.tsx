@@ -21,6 +21,7 @@ interface SearchResult {
 }
 
 export type SearchType = 'knowledge' | 'chat'
+export type KnowledgeSearchScope = 'all' | 'meetings'
 
 function activeTabToTypes(section: ActiveSection): SearchType[] {
   if (section === 'knowledge') return ['knowledge']
@@ -48,6 +49,8 @@ interface CommandPaletteProps {
   // Overrides the sidebar-section default for the initial scope (e.g. the
   // knowledge view opens search scoped to knowledge).
   defaultScope?: SearchType
+  defaultKnowledgeScope?: KnowledgeSearchScope
+  initialQuery?: string
 }
 
 export function CommandPalette({
@@ -56,6 +59,8 @@ export function CommandPalette({
   onSelectFile,
   onSelectRun,
   defaultScope,
+  defaultKnowledgeScope = 'all',
+  initialQuery = '',
 }: CommandPaletteProps) {
   const { activeSection } = useSidebarSection()
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -63,6 +68,7 @@ export function CommandPalette({
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<SearchResult[]>([])
   const [isSearching, setIsSearching] = useState(false)
+  const [knowledgeScope, setKnowledgeScope] = useState<KnowledgeSearchScope>(defaultKnowledgeScope)
   const [activeTypes, setActiveTypes] = useState<Set<SearchType>>(
     () => new Set(defaultScope ? [defaultScope] : activeTabToTypes(activeSection))
   )
@@ -71,10 +77,11 @@ export function CommandPalette({
   // Sync filters and clear query when the dialog opens.
   useEffect(() => {
     if (open) {
-      setQuery('')
+      setQuery(initialQuery)
       setActiveTypes(new Set(defaultScope ? [defaultScope] : activeTabToTypes(activeSection)))
+      setKnowledgeScope(defaultKnowledgeScope)
     }
-  }, [open, activeSection, defaultScope])
+  }, [open, activeSection, defaultScope, defaultKnowledgeScope, initialQuery])
 
   useEffect(() => {
     if (!open) return
@@ -96,7 +103,12 @@ export function CommandPalette({
     setIsSearching(true)
 
     const types = Array.from(activeTypes) as ('knowledge' | 'chat')[]
-    window.ipc.invoke('search:query', { query: debouncedQuery, limit: 20, types })
+    window.ipc.invoke('search:query', {
+      query: debouncedQuery,
+      limit: 20,
+      types,
+      knowledgeScope: activeTypes.has('knowledge') ? knowledgeScope : undefined,
+    })
       .then((res) => {
         if (!cancelled) {
           setResults(res.results)
@@ -113,7 +125,7 @@ export function CommandPalette({
       })
 
     return () => { cancelled = true }
-  }, [debouncedQuery, activeTypes])
+  }, [debouncedQuery, activeTypes, knowledgeScope])
 
   useEffect(() => {
     if (!open) {
@@ -175,6 +187,22 @@ export function CommandPalette({
             label="Chats"
           />
         </div>
+        {scope === 'knowledge' && (
+          <div className="ml-auto inline-flex items-center rounded-lg bg-muted/60 p-0.5" aria-label="Note search scope">
+            <FilterToggle
+              active={knowledgeScope === 'all'}
+              onClick={() => setKnowledgeScope('all')}
+              icon={<FileTextIcon className="size-3" />}
+              label="All notes"
+            />
+            <FilterToggle
+              active={knowledgeScope === 'meetings'}
+              onClick={() => setKnowledgeScope('meetings')}
+              icon={<FileTextIcon className="size-3" />}
+              label="Meetings"
+            />
+          </div>
+        )}
       </div>
       <CommandList>
         {!query.trim() && (
@@ -200,7 +228,7 @@ export function CommandPalette({
           </div>
         )}
         {knowledgeResults.length > 0 && (
-          <CommandGroup heading="Knowledge">
+          <CommandGroup heading={knowledgeScope === 'meetings' ? 'Meeting notes' : 'Knowledge'}>
             {knowledgeResults.map((result) => (
               <CommandItem
                 key={`knowledge-${result.path}`}

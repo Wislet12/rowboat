@@ -18,12 +18,22 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   CopyIcon,
+  DownloadIcon,
+  Loader2Icon,
   PaperclipIcon,
   XIcon,
 } from "lucide-react";
 import type { ComponentProps, HTMLAttributes, ReactElement } from "react";
 import { createContext, memo, useContext, useEffect, useState } from "react";
 import { Streamdown } from "streamdown";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
   from: UIMessage["role"];
@@ -71,6 +81,61 @@ export const MessageCopyButton = ({
   );
 };
 
+const OUTPUT_FORMATS = [
+  { format: "md", label: "Markdown (.md)" },
+  { format: "txt", label: "Plain text (.txt)" },
+  { format: "html", label: "Web page (.html)" },
+  { format: "docx", label: "Word (.docx)" },
+  { format: "pdf", label: "PDF (.pdf)" },
+] as const;
+
+/** Per-assistant-response export menu shared by full and sidebar chat. */
+export const MessageDownloadButton = ({
+  text,
+  title = "Chat response",
+  className,
+}: {
+  text: string;
+  title?: string;
+  className?: string;
+}) => {
+  const [downloading, setDownloading] = useState<string | null>(null);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label="Download response"
+          className={cn(
+            "shrink-0 rounded-md p-1.5 text-muted-foreground/60 opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100",
+            className
+          )}
+        >
+          {downloading ? <Loader2Icon className="size-3.5 animate-spin" /> : <DownloadIcon className="size-3.5" />}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-48">
+        <DropdownMenuLabel>Download response</DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        {OUTPUT_FORMATS.map(({ format, label }) => (
+          <DropdownMenuItem
+            key={format}
+            disabled={downloading !== null}
+            onSelect={() => {
+              setDownloading(format);
+              void window.ipc.invoke("export:note", { markdown: text, format, title })
+                .catch((error) => console.error("Chat response export failed:", error))
+                .finally(() => setDownloading(null));
+            }}
+          >
+            {label}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+};
+
 export type MessageContentProps = HTMLAttributes<HTMLDivElement>;
 
 export const MessageContent = ({
@@ -83,7 +148,7 @@ export const MessageContent = ({
     className={cn(
       "is-user:dark flex w-fit max-w-full min-w-0 flex-col gap-2 overflow-hidden text-sm",
       "group-[.is-user]:ml-auto group-[.is-user]:rounded-2xl group-[.is-user]:rounded-tr-md group-[.is-user]:bg-secondary group-[.is-user]:px-4 group-[.is-user]:py-2.5 group-[.is-user]:text-foreground",
-      "group-[.is-assistant]:w-full group-[.is-assistant]:text-foreground",
+      "group-[.is-assistant]:w-full group-[.is-assistant]:select-text group-[.is-assistant]:cursor-text group-[.is-assistant]:text-foreground",
       className
     )}
     {...props}
@@ -349,7 +414,7 @@ export const MessageResponse = memo(
   ({ className, ...props }: MessageResponseProps) => (
     <Streamdown
       className={cn(
-        "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 bidi-auto",
+        "size-full select-text cursor-text [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 bidi-auto",
         className
       )}
       {...props}

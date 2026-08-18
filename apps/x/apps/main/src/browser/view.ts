@@ -950,6 +950,77 @@ export class BrowserViewManager extends EventEmitter {
     }
   }
 
+  /**
+   * Fresh, identity-bound snapshot for chat/voice grounding. Unlike tool
+   * snapshots this includes user-selected text and lightweight page metadata,
+   * and it refuses to return content if the active tab changes mid-capture.
+   */
+  async readContext(): Promise<{
+    ok: boolean;
+    tabId?: string;
+    capturedAt?: string;
+    page?: BrowserPageSnapshot;
+    selectedText?: string;
+    metadata?: { description?: string; headings: string[]; language?: string };
+    error?: string;
+  }> {
+    const tabBefore = this.getActiveTab();
+    if (!tabBefore) return { ok: false, error: 'No active browser tab is open.' };
+
+    const pageResult = await this.readPage({ maxElements: 24, maxTextLength: 16000, waitForReady: true });
+    if (!pageResult.ok || !pageResult.page) return pageResult;
+
+    const tabAfterPage = this.getActiveTab();
+    if (!tabAfterPage || tabAfterPage.id !== tabBefore.id) {
+      return { ok: false, error: 'The active browser tab changed while context was being captured.' };
+    }
+
+    try {
+      const extras = await this.executeOnActiveTab<{
+        selectedText: string;
+        description: string;
+        headings: string[];
+        language: string;
+      }>(`(() => ({
+        selectedText: String(window.getSelection?.()?.toString() ?? '').trim().slice(0, 4000),
+        description: String(document.querySelector('meta[name="description"]')?.getAttribute('content') ?? '').trim().slice(0, 1000),
+        headings: Array.from(document.querySelectorAll('h1, h2, h3'))
+          .filter((node) => {
+            const rect = node.getBoundingClientRect();
+            const style = window.getComputedStyle(node);
+            return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+          })
+          .map((node) => String(node.textContent ?? '').replace(/\\s+/g, ' ').trim().slice(0, 240))
+          .filter(Boolean)
+          .slice(0, 24),
+        language: String(document.documentElement.lang ?? '').trim().slice(0, 40),
+      }))()`);
+
+      const tabAfterExtras = this.getActiveTab();
+      if (!tabAfterExtras || tabAfterExtras.id !== tabBefore.id || tabAfterExtras.view.webContents.getURL() !== pageResult.page.url) {
+        return { ok: false, error: 'The active browser page changed while context was being captured.' };
+      }
+
+      return {
+        ok: true,
+        tabId: tabBefore.id,
+        capturedAt: new Date().toISOString(),
+        page: pageResult.page,
+        selectedText: extras.selectedText || undefined,
+        metadata: {
+          description: extras.description || undefined,
+          headings: extras.headings,
+          language: extras.language || undefined,
+        },
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : 'Failed to capture browser context.',
+      };
+    }
+  }
+
   async readPageSummary(
     signal?: AbortSignal,
     options?: { waitForReady?: boolean },

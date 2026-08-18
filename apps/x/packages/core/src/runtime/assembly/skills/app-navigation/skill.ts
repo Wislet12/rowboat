@@ -46,14 +46,23 @@ that view so the user sees it.
 - ` + "`view: \"apps\"`" + ` → installed Rowboat apps: ` + "`{ folder, name, description, kind, dataFiles, agentSlugs }`" + `.
 - ` + "`limit`" + ` (optional, default 15).
 
-For notes, meetings, and live notes use the ` + "`file-*`" + ` tools (they are
-markdown files in the workspace) and then open-note / open-item to show them.
+For notes and meetings, use ` + "`search-notes`" + ` when the user asks to find or
+search for a specific note. It searches only notes the user can read and opens
+a selectable result list on screen. Pass ` + "`noteScope: \"meetings\"`" + ` for meeting
+notes, or ` + "`noteScope: \"all\"`" + ` for all Brain/knowledge notes. Once the user
+selects a result, that note opens and becomes the active chat/voice context.
+Use the ` + "`file-*`" + ` tools when you need to inspect or edit note contents.
 
 ### open-item — open one specific thing on screen
 - ` + "`kind: \"email-thread\"`" + ` + ` + "`threadId`" + ` (from read-view email)
 - ` + "`kind: \"note\"`" + ` + ` + "`path`" + `
 - ` + "`kind: \"bg-task\"`" + ` + ` + "`taskName`" + ` (from read-view bg-tasks; validated against real tasks)
 - ` + "`kind: \"session\"`" + ` + ` + "`sessionId`" + ` (from read-view chat-history)
+
+### search-notes — search Brain or meeting notes and show selectable results
+- ` + "`query`" + `: the note title/content terms to search
+- ` + "`noteScope: \"all\" | \"meetings\"`" + ` (default ` + "`all`" + `)
+- Results are permission-checked on every search; do not guess inaccessible paths.
 
 ### open-view — just switch the screen
 ` + "`view`" + `: ` + "`home | email | meetings | live-notes | bg-tasks | chat-history | knowledge | workspace | code | bases | graph | apps`" + `
