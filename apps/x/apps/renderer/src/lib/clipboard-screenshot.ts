@@ -14,6 +14,25 @@ export function isSupportedClipboardScreenshot(file: Pick<File, 'type'>): boolea
   return SUPPORTED_SCREENSHOT_MIMES.has(file.type.toLowerCase())
 }
 
+type ClipboardImageSource = Pick<DataTransfer, 'files' | 'items'>
+
+export function clipboardScreenshotFiles(clipboard: ClipboardImageSource): File[] {
+  // Chromium exposes a bitmap copied by Snipping Tool/Print Screen through
+  // DataTransferItemList on Windows. DataTransfer.files is often empty for
+  // that native clipboard shape, even though synthetic paste events populate
+  // it. Prefer items, then retain files as the drag/file-copy fallback.
+  const itemFiles = Array.from(clipboard.items ?? [])
+    .filter((item) => item.kind === 'file')
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => file !== null)
+    .filter(isSupportedClipboardScreenshot)
+
+  if (itemFiles.length > 0) return itemFiles
+
+  return Array.from(clipboard.files ?? [])
+    .filter(isSupportedClipboardScreenshot)
+}
+
 export function clipboardScreenshotName(
   file: Pick<File, 'name' | 'type'>,
   index: number,

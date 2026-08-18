@@ -62,6 +62,7 @@ import {
 } from '@/components/ai-elements/prompt-input'
 import { toast } from 'sonner'
 import {
+  clipboardScreenshotFiles,
   clipboardScreenshotName,
   isSupportedClipboardScreenshot,
   readClipboardScreenshot,
@@ -668,8 +669,7 @@ function ChatInputInner({
   }, [])
 
   const handlePaste = useCallback((event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = Array.from(event.clipboardData?.files ?? [])
-      .filter(isSupportedClipboardScreenshot)
+    const files = clipboardScreenshotFiles(event.clipboardData)
     if (files.length === 0) return
     event.preventDefault()
     void addClipboardScreenshots(files)
