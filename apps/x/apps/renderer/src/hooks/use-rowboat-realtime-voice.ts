@@ -7,6 +7,7 @@ import {
   type RowboatRealtimeState,
   type RowboatRealtimeTranscript,
 } from '@/lib/rowboat-realtime-webrtc'
+import type { RowboatRealtimeContextSnapshot } from '@x/shared/src/realtime-voice-context.js'
 
 type HookCallbacks = {
   onTranscript: (transcript: RowboatRealtimeTranscript) => void
@@ -15,6 +16,7 @@ type HookCallbacks = {
   onAssistantTranscript?: (transcript: RowboatRealtimeTranscript) => void
   onBargeIn?: () => void
   onDelegate?: (delegation: RowboatRealtimeDelegation) => Promise<string>
+  onGetContext?: () => Promise<RowboatRealtimeContextSnapshot | null | undefined>
   onError?: (error: RowboatRealtimeSessionError) => void
 }
 
@@ -173,6 +175,11 @@ export function useRowboatRealtimeVoice(enabled: boolean, callbacks: HookCallbac
           if (!callback) return Promise.reject(new Error('Rowboat’s delegation runtime is unavailable.'))
           return callback(delegation)
         },
+        onGetContext: async () => (
+          callbacksRef.current.onGetContext
+            ? await callbacksRef.current.onGetContext()
+            : null
+        ),
         onError: (nextError) => {
           if (!mountedRef.current || sessionRef.current !== session) return
           setError(nextError.message)
@@ -224,6 +231,7 @@ export function useRowboatRealtimeVoice(enabled: boolean, callbacks: HookCallbac
   const cancelSpeech = useCallback(() => sessionRef.current?.cancelSpeech(), [])
   const setMuted = useCallback((muted: boolean) => sessionRef.current?.setMuted(muted), [])
   const getLevel = useCallback(() => sessionRef.current?.getLevel() ?? 0, [])
+  const refreshContext = useCallback(() => sessionRef.current?.refreshContext() ?? Promise.resolve(false), [])
 
   useEffect(() => {
     mountedRef.current = true
@@ -263,5 +271,6 @@ export function useRowboatRealtimeVoice(enabled: boolean, callbacks: HookCallbac
     cancelSpeech,
     setMuted,
     getLevel,
+    refreshContext,
   }
 }

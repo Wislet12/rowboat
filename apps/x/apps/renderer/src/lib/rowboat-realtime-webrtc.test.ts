@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import type { RowboatRealtimeContextSnapshot } from '@x/shared/src/realtime-voice-context.js'
 import { RowboatRealtimeWebRtcSession } from './rowboat-realtime-webrtc'
 
 class FakeChannel extends EventTarget {
@@ -147,6 +148,9 @@ describe('RowboatRealtimeWebRtcSession', () => {
       id: 'user-audio-1',
       text: 'How are you doing today?',
     })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(peer.channel.sent.at(-1)).toMatchObject({ type: 'response.create' })
 
     peer.channel.message({
       type: 'response.created',
@@ -185,6 +189,128 @@ describe('RowboatRealtimeWebRtcSession', () => {
     expect(track.stop).toHaveBeenCalledOnce()
     expect(audio.pause).toHaveBeenCalledOnce()
     expect(audio.remove).toHaveBeenCalledOnce()
+  })
+
+  it('replaces meeting context before every direct spoken response', async () => {
+    const contexts = [
+      { kind: 'empty' as const },
+      {
+        kind: 'note' as const,
+        path: 'knowledge/Meetings/Alpha.md',
+        contextId: 'knowledge/Meetings/Alpha.md',
+        title: 'Alpha',
+        noteType: 'meeting' as const,
+        metadata: { attendee: ['Avery'] },
+        content: 'ALPHA-VOICE-ONLY',
+      },
+      {
+        kind: 'note' as const,
+        path: 'knowledge/Meetings/Beta.md',
+        contextId: 'knowledge/Meetings/Beta.md',
+        title: 'Beta',
+        noteType: 'meeting' as const,
+        metadata: { attendee: ['Blake'] },
+        content: 'BETA-VOICE-ONLY',
+      },
+    ]
+    const onGetContext = vi.fn(async () => contexts.shift() ?? { kind: 'empty' as const })
+    const { session, peer } = harness({ onGetContext })
+    await session.connect()
+
+    peer.channel.message({ type: 'input_audio_buffer.speech_started' })
+    peer.channel.message({ type: 'input_audio_buffer.speech_stopped' })
+    peer.channel.message({
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'alpha-turn',
+      transcript: 'What did we decide?',
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    peer.channel.message({ type: 'input_audio_buffer.speech_started' })
+    peer.channel.message({ type: 'input_audio_buffer.speech_stopped' })
+    peer.channel.message({
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'beta-turn',
+      transcript: 'What did we decide now?',
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const updates = peer.channel.sent.filter((event) => event.type === 'session.update')
+    expect(updates).toHaveLength(3)
+    expect(updates[1].session.instructions).toContain('ALPHA-VOICE-ONLY')
+    expect(updates[2].session.instructions).toContain('BETA-VOICE-ONLY')
+    expect(updates[2].session.instructions).not.toContain('ALPHA-VOICE-ONLY')
+    expect(peer.channel.sent.filter((event) => event.type === 'response.create')).toHaveLength(2)
+  })
+
+  it('prevents a slow old-note capture from overwriting a newer note switch', async () => {
+    let releaseAlpha!: (value: RowboatRealtimeContextSnapshot) => void
+    const alpha = new Promise<RowboatRealtimeContextSnapshot>((resolve) => { releaseAlpha = resolve })
+    const onGetContext = vi.fn()
+      .mockResolvedValueOnce({ kind: 'empty' })
+      .mockImplementationOnce(() => alpha)
+      .mockResolvedValueOnce({
+        kind: 'note',
+        path: 'knowledge/Meetings/Beta.md',
+        contextId: 'knowledge/Meetings/Beta.md',
+        title: 'Beta',
+        noteType: 'meeting',
+        metadata: {},
+        content: 'BETA-WINS-THE-RACE',
+      })
+    const { session, peer } = harness({ onGetContext })
+    await session.connect()
+
+    peer.channel.message({ type: 'input_audio_buffer.speech_started' })
+    peer.channel.message({ type: 'input_audio_buffer.speech_stopped' })
+    peer.channel.message({
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'racing-turn',
+      transcript: 'Use the current note.',
+    })
+    await Promise.resolve()
+    const betaRefresh = session.refreshContext()
+    await betaRefresh
+    releaseAlpha({
+      kind: 'note',
+      path: 'knowledge/Meetings/Alpha.md',
+      contextId: 'knowledge/Meetings/Alpha.md',
+      title: 'Alpha',
+      noteType: 'meeting',
+      metadata: {},
+      content: 'STALE-ALPHA-MUST-NOT-WIN',
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const updates = peer.channel.sent.filter((event) => event.type === 'session.update')
+    expect(updates.at(-1)?.session.instructions).toContain('BETA-WINS-THE-RACE')
+    expect(JSON.stringify(updates)).not.toContain('STALE-ALPHA-MUST-NOT-WIN')
+    expect(peer.channel.sent.at(-1)).toMatchObject({ type: 'response.create' })
+  })
+
+  it('clears voice context when permission-aware capture returns no note', async () => {
+    const onGetContext = vi.fn()
+      .mockResolvedValueOnce({
+        kind: 'note',
+        path: 'knowledge/Brain/Allowed.md',
+        contextId: 'knowledge/Brain/Allowed.md',
+        title: 'Allowed',
+        noteType: 'brain',
+        metadata: {},
+        content: 'REVOKED-CONTENT',
+      })
+      .mockResolvedValueOnce(null)
+    const { session, peer } = harness({ onGetContext })
+    await session.connect()
+    await session.refreshContext()
+
+    const updates = peer.channel.sent.filter((event) => event.type === 'session.update')
+    expect(updates[0].session.instructions).toContain('REVOKED-CONTENT')
+    expect(updates[1].session.instructions).not.toContain('REVOKED-CONTENT')
+    expect(updates[1].session.instructions).toContain('No note or browser page is currently available')
   })
 
   it('delegates one exact function call and cancels it on voice barge-in', async () => {

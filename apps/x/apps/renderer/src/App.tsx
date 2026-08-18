@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { useCallback, useEffect, useLayoutEffect, useState, useRef } from 'react'
 import { workspace } from '@x/shared';
+import type { RowboatRealtimeContextSnapshot } from '@x/shared/src/realtime-voice-context.js';
 import { RunEvent } from '@x/shared/src/runs.js';
 import type { ToolUIPart } from 'ai';
 import './App.css'
@@ -1119,6 +1120,7 @@ function App() {
   const [realtimeLastUserText, setRealtimeLastUserText] = useState('')
   const [realtimeLastAssistantText, setRealtimeLastAssistantText] = useState('')
   const realtimeDelegateRef = useRef<((delegation: RowboatRealtimeDelegation) => Promise<string>) | null>(null)
+  const realtimeContextProviderRef = useRef<(() => Promise<RowboatRealtimeContextSnapshot | null>) | null>(null)
   const realtimeBargeInRef = useRef<(() => void) | null>(null)
   const realtimeDelegationSessionRef = useRef<string | null>(null)
   const foregroundDelegationRef = useRef<{ callId: string; turnId: string | null } | null>(null)
@@ -1153,6 +1155,11 @@ function App() {
       if (!callback) return Promise.reject(new Error('Rowboat’s delegation runtime is unavailable.'))
       return callback(delegation)
     },
+    onGetContext: async () => (
+      realtimeContextProviderRef.current
+        ? await realtimeContextProviderRef.current()
+        : null
+    ),
   })
   const rowboatRealtimeVoiceRef = useRef(rowboatRealtimeVoice)
   rowboatRealtimeVoiceRef.current = rowboatRealtimeVoice
@@ -3661,6 +3668,22 @@ function App() {
       return undefined
     }
   }
+
+  // Realtime voice uses the same fresh, permission-gated snapshot builder as
+  // typed chat and delegated voice tasks. No captured note body is retained in
+  // the hook: the provider asks again on every spoken turn.
+  realtimeContextProviderRef.current = async () => {
+    const context = await buildMiddlePaneContext()
+    return context ?? { kind: 'empty', capturedAt: new Date().toISOString() }
+  }
+
+  // Replace the live session context immediately when the visible note/page
+  // changes. Per-turn refresh in the WebRTC session remains authoritative and
+  // catches permission revocation, navigation, and unsaved edits as well.
+  useEffect(() => {
+    if (!rowboatRealtimeVoiceRef.current.active) return
+    void rowboatRealtimeVoiceRef.current.refreshContext()
+  }, [selectedPath, isBrowserOpen, isRightPaneMaximized, debouncedContent])
 
   const handlePromptSubmit = async (
     message: PromptInputMessage,

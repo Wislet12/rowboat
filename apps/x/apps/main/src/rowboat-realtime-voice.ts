@@ -5,6 +5,7 @@ import {
   getRealtimeChatGPTStatus,
   RealtimeChatGPTAuthRequiredError,
 } from '@x/core/dist/auth/realtime-chatgpt-auth.js';
+import { ROWBOAT_REALTIME_BASE_INSTRUCTIONS } from '@x/shared/dist/realtime-voice-context.js';
 import { getJarvisExecutionAuthority } from './jarvis-execution-authority.js';
 
 const CLIENT_SECRETS_URL = 'https://api.openai.com/v1/realtime/client_secrets';
@@ -139,18 +140,7 @@ function sessionConfig() {
     type: 'realtime',
     model: MODEL,
     output_modalities: ['audio'],
-    instructions:
-      'You are Rowboat’s live conversational voice inside the Rowboat application. '
-      + 'Have a natural, concise, spoken conversation and respond directly to greetings, '
-      + 'follow-up questions, brainstorming, and general knowledge. The user can interrupt you, '
-      + 'so stop promptly and follow their newest turn. Speak with a warm, clearly masculine, '
-      + 'lower-register voice and never sound like a narrator reading generated text. '
-      + 'Do not read markdown or long blocks verbatim. '
-      + 'When the user asks to use connected apps, inspect or change files, run code, browse or research '
-      + 'with Rowboat tools, send or edit external data, or perform any durable action, call '
-      + 'rowboat_delegate exactly once with the complete request. Never claim an external action or '
-      + 'tool result without that function. After it returns, explain the result naturally and briefly. '
-      + 'Rowboat owns the tools and session; never mention bridges or internal routing.',
+    instructions: ROWBOAT_REALTIME_BASE_INSTRUCTIONS,
     audio: {
       input: {
         noise_reduction: { type: 'near_field' },
@@ -160,7 +150,9 @@ function sessionConfig() {
           threshold: 0.45,
           prefix_padding_ms: 300,
           silence_duration_ms: 450,
-          create_response: true,
+          // The renderer creates each response only after refreshing the
+          // permission-checked current note/browser replacement snapshot.
+          create_response: false,
           interrupt_response: true,
         },
       },
@@ -174,8 +166,9 @@ function sessionConfig() {
         name: 'rowboat_delegate',
         description:
           'Delegate work to Rowboat’s existing Codex-authorized agent and tool runtime. '
-          + 'Use this for connected apps, files, code execution, web research, workspace context, '
-          + 'or any request that requires tools or a durable action. Do not use it for ordinary conversation.',
+          + 'Use this to search or open meeting/Brain notes, for connected apps, files, code execution, '
+          + 'web research beyond the supplied current page, or any request that requires tools or a durable action. '
+          + 'Do not use it for ordinary conversation grounded in the supplied current snapshot.',
         parameters: {
           type: 'object',
           properties: {

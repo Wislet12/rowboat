@@ -1,7 +1,8 @@
 # Active note context lifecycle
 
 Rowboat treats note awareness as replaceable UI state, not cumulative chat
-history. This contract is shared by typed chat and realtime voice delegation.
+history. This contract is shared by typed chat, direct GPT Realtime voice, and
+voice delegation into Rowboat's Codex/tool runtime.
 
 1. Opening a Markdown note emits `rowboat:note-context-open` with
    `{ path, replacedPath }`.
@@ -22,6 +23,24 @@ The active snapshot contains the normalized path/context ID, title, note type
 body. Meeting transcripts and existing notes are therefore available when
 they are part of the open note. If no note is open, chat and voice retain their
 existing behavior without a note snapshot.
+
+## Direct Realtime voice
+
+GPT Realtime uses server VAD to commit microphone audio, but automatic provider
+response creation is disabled. When transcription completes, Rowboat:
+
+1. re-runs the same permission-gated current-note/browser capture used by chat;
+2. sends a complete `session.update` containing the immutable voice/tool policy
+   plus exactly one replacement context snapshot; and
+3. sends `response.create` only after that replacement update.
+
+Opening, closing, editing, or switching the visible note also refreshes an
+active voice session immediately. A monotonically increasing context revision
+prevents a slow old-note read from overwriting a newer selection. An empty or
+permission-denied capture explicitly clears the prior snapshot. Browser text
+remains untrusted data. Requests to search or open other meeting/Brain notes
+use `rowboat_delegate`, after which the selected result enters this same
+lifecycle.
 
 `search-notes` searches either all accessible Brain/knowledge notes or only
 `knowledge/Meetings`. Search results are re-authorized on each query. Selecting

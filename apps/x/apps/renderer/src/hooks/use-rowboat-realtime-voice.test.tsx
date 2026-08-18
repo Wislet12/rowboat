@@ -43,6 +43,7 @@ vi.mock('@/lib/rowboat-realtime-webrtc', () => {
     cancelSpeech = vi.fn()
     setMuted = vi.fn()
     getLevel = vi.fn(() => 0)
+    refreshContext = vi.fn().mockResolvedValue(true)
     constructor() {
       transport.instances.push(this)
     }

@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { Message, MessageContent, MessageDownloadButton } from './message'
+import { Message, MessageContent, MessageDownloadButton, MessageResponse } from './message'
 
 afterEach(cleanup)
 
@@ -15,6 +15,14 @@ describe('assistant response actions', () => {
 
     expect(screen.getByText('Selectable answer')).toHaveClass('group-[.is-assistant]:select-text')
     expect(screen.getByText('Selectable answer')).toHaveClass('group-[.is-assistant]:cursor-text')
+  })
+
+  it('keeps rendered markdown and realtime transcript text cursor-selectable', () => {
+    render(<MessageResponse>Realtime selectable answer</MessageResponse>)
+
+    const renderedText = screen.getByText('Realtime selectable answer')
+    expect(renderedText.closest('.select-text')).not.toBeNull()
+    expect(renderedText.closest('.cursor-text')).not.toBeNull()
   })
 
   it('exports a single response in Word format', async () => {

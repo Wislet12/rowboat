@@ -74,7 +74,7 @@ describe('RowboatRealtimeVoiceBroker', () => {
           transcription: { model: 'gpt-4o-mini-transcribe' },
           turn_detection: {
             type: 'server_vad',
-            create_response: true,
+            create_response: false,
             interrupt_response: true,
           },
         },
@@ -93,6 +93,8 @@ describe('RowboatRealtimeVoiceBroker', () => {
     ]);
     expect(admissionBody.session.instructions).toMatch(/live conversational voice/i);
     expect(admissionBody.session.instructions).toMatch(/warm, clearly masculine[\s\S]*lower-register voice/i);
+    expect(admissionBody.session.instructions).toMatch(/CURRENT LIVE CONTEXT[\s\S]*never reuse an older snapshot/i);
+    expect(admissionBody.session.instructions).toMatch(/search or open other meeting or Brain notes/i);
     expect(admissionBody.session.instructions).not.toMatch(/speech transport|say exact text|never answer user audio/i);
     expect(JSON.stringify(admissionBody)).not.toMatch(/jarvis|pocket|gemini|api[_ -]?key/i);
     expect(fetchImpl.mock.calls[1]?.[0]).toBe('https://api.openai.com/v1/realtime/calls');

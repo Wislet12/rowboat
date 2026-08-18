@@ -24,4 +24,5 @@ export * as codeSessions from './code-sessions.js';
 export * as channels from './channels.js';
 export * as time from './time.js';
 export * as rowboatApp from './rowboat-app.js';
+export * as realtimeVoiceContext from './realtime-voice-context.js';
 export { PrefixLogger };

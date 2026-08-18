@@ -1,3 +1,8 @@
+import {
+  buildRowboatRealtimeInstructions,
+  type RowboatRealtimeContextSnapshot,
+} from '@x/shared/src/realtime-voice-context.js'
+
 const CONNECT_TIMEOUT_MS = 20_000
 const ICE_GATHER_TIMEOUT_MS = 5_000
 const MAX_EVENT_BYTES = 64 * 1024
@@ -64,6 +69,7 @@ type RealtimeSessionCallbacks = {
   onAssistantTranscript?: (transcript: RowboatRealtimeTranscript) => void
   onBargeIn?: () => void
   onDelegate?: (delegation: RowboatRealtimeDelegation) => Promise<string>
+  onGetContext?: () => Promise<RowboatRealtimeContextSnapshot | null | undefined>
   onError?: (error: RowboatRealtimeSessionError) => void
 }
 
@@ -177,6 +183,8 @@ export class RowboatRealtimeWebRtcSession {
   private handlingFunctionBatch = false
   private currentResponseId = ''
   private assistantCaption = ''
+  private contextRevision = 0
+  private inputTurnRevision = 0
 
   constructor(
     callbacks: RealtimeSessionCallbacks = {},
@@ -297,6 +305,8 @@ export class RowboatRealtimeWebRtcSession {
       await peer.setRemoteDescription({ type: 'answer', sdp: result.answerSdp })
       await waitForChannel(channel)
       if (this.closed || epoch !== this.epoch) throw cancelledError('Voice start was cancelled.')
+      await this.refreshContext()
+      if (this.closed || epoch !== this.epoch) throw cancelledError('Voice start was cancelled.')
       this.reportState('connected')
     } catch (error) {
       await this.stop()
@@ -320,7 +330,8 @@ export class RowboatRealtimeWebRtcSession {
   }
 
   pttEnd(): void {
-    // VAD commits the turn and creates the response automatically.
+    // VAD commits the turn. Rowboat creates the response after the current
+    // permission-checked context snapshot has replaced the previous one.
   }
 
   pttCancel(): void {
@@ -361,6 +372,41 @@ export class RowboatRealtimeWebRtcSession {
     return Math.min(1, Math.sqrt(energy / this.audioLevelData.length) * 3)
   }
 
+  /**
+   * Replace the provider's current note/page awareness without stacking it.
+   * The revision guard prevents a slow Alpha capture from overwriting a newer
+   * Beta capture when the user switches notes quickly.
+   */
+  async refreshContext(): Promise<boolean> {
+    const revision = ++this.contextRevision
+    let snapshot: RowboatRealtimeContextSnapshot | null | undefined
+    try {
+      snapshot = await this.callbacks.onGetContext?.()
+    } catch {
+      snapshot = null
+    }
+    if (this.closed || revision !== this.contextRevision) return false
+    const context = snapshot ?? { kind: 'empty' as const, capturedAt: new Date().toISOString() }
+    const sent = this.send({
+      type: 'session.update',
+      session: {
+        type: 'realtime',
+        instructions: buildRowboatRealtimeInstructions(context),
+      },
+    })
+    this.diagnostic('context', {
+      phase: sent ? 'replaced' : 'unavailable',
+      kind: context.kind,
+      contextId: context.kind === 'note'
+        ? context.contextId
+        : context.kind === 'browser'
+          ? context.snapshotId || context.tabId || context.url
+          : '',
+      revision,
+    })
+    return sent
+  }
+
   async stop(): Promise<void> {
     if (this.closed && !this.sessionId) return
     this.closed = true
@@ -377,6 +423,8 @@ export class RowboatRealtimeWebRtcSession {
     this.currentResponseId = ''
     this.assistantCaption = ''
     this.userSpeaking = false
+    ++this.contextRevision
+    ++this.inputTurnRevision
 
     const channel = this.channel
     const peer = this.peer
@@ -445,6 +493,7 @@ export class RowboatRealtimeWebRtcSession {
     const type = boundedText(event.type, 160)
     this.diagnostic('provider_event', { type })
     if (type === 'input_audio_buffer.speech_started') {
+      ++this.inputTurnRevision
       this.userSpeaking = true
       this.abortDelegations(true)
       this.currentResponseId = ''
@@ -471,6 +520,8 @@ export class RowboatRealtimeWebRtcSession {
         this.trimSet(this.completedTranscripts)
         this.callbacks.onInterimTranscript?.('')
         this.callbacks.onTranscript?.({ id: identity, text: transcript })
+        const turnRevision = this.inputTurnRevision
+        void this.createResponseForTranscript(turnRevision)
       }
       return
     }
@@ -548,6 +599,17 @@ export class RowboatRealtimeWebRtcSession {
         'provider_unavailable',
       ))
     }
+  }
+
+  private async createResponseForTranscript(turnRevision: number): Promise<void> {
+    await this.refreshContext()
+    if (
+      this.closed
+      || this.userSpeaking
+      || turnRevision !== this.inputTurnRevision
+    ) return
+    this.reportState('thinking')
+    this.send({ type: 'response.create' })
   }
 
   private handleFunctionCall(call: FunctionCall): void {
