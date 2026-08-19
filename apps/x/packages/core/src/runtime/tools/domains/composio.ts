@@ -8,6 +8,44 @@ import { executeAction as executeComposioAction, isConfigured as isComposioConfi
 import { CURATED_TOOLKITS, CURATED_TOOLKIT_SLUGS } from "@x/shared/dist/composio.js";
 import { BuiltinToolsSchema } from "../types.js";
 
+type ComposioSearchRequest = {
+    query: string;
+    toolkitSlug?: string;
+};
+
+const MUTATING_CALENDAR_QUERY = /\b(?:add|book|cancel|create|delete|edit|invite|move|remove|reschedule|schedule|send|update)\b/i;
+const CALENDAR_EVENT_QUERY = /\bevents?\b/i;
+const CALENDAR_READ_QUERY = /\b(?:check|find|get|list|show|upcoming|view|what)\b/i;
+
+// Composio's Calendar catalogue reliably resolves the short, toolkit-scoped
+// phrase "list events". Models sometimes send a UI-shaped phrase such as
+// "Google Calendar List Upcoming Events", which the catalogue returns as an
+// empty search. Normalize only clear read intents; mutation discovery keeps
+// the exact request and continues through the permission gate.
+export function normalizeComposioSearchRequest(
+    request: ComposioSearchRequest,
+): ComposioSearchRequest {
+    const query = request.query.trim();
+    const toolkitSlug = request.toolkitSlug?.trim().toLowerCase();
+    const explicitlyGoogleCalendar = toolkitSlug === "googlecalendar";
+    const namesGoogleCalendar = /\bgoogle\s+calendar\b/i.test(query);
+    const isCalendarEventRead =
+        CALENDAR_EVENT_QUERY.test(query) &&
+        CALENDAR_READ_QUERY.test(query) &&
+        !MUTATING_CALENDAR_QUERY.test(query);
+
+    if (
+        isCalendarEventRead &&
+        (explicitlyGoogleCalendar || (!toolkitSlug && namesGoogleCalendar))
+    ) {
+        return { query: "list events", toolkitSlug: "googlecalendar" };
+    }
+
+    return {
+        query,
+        ...(toolkitSlug ? { toolkitSlug } : {}),
+    };
+}
 
 export const composioTools: z.infer<typeof BuiltinToolsSchema> = {
     'composio-list-toolkits': {
@@ -39,19 +77,20 @@ export const composioTools: z.infer<typeof BuiltinToolsSchema> = {
 
     'composio-search-tools': {
         permission: "none",
-        description: 'Search for Composio tools by use case across connected services. Returns tool slugs, descriptions, and input schemas so you can call composio-execute-tool with the right parameters. Example: search "send email" to find Gmail tools, "create issue" to find GitHub/Jira tools.',
+        description: 'Search for Composio tools by use case across connected services. Returns tool slugs, descriptions, and input schemas so you can call composio-execute-tool with the right parameters. Use short action phrases and constrain the toolkit. For Google Calendar reads, use query "list events" with toolkitSlug "googlecalendar". Other examples: "send email" for Gmail, "create issue" for GitHub/Jira.',
         inputSchema: z.object({
             query: z.string().describe('Natural language description of what you want to do (e.g., "send an email", "create a GitHub issue", "schedule a meeting")'),
             toolkitSlug: z.string().optional().describe('Optional: limit search to a specific toolkit (e.g., "gmail", "github")'),
         }),
         execute: async ({ query, toolkitSlug }: { query: string; toolkitSlug?: string }) => {
             try {
-                const toolkitFilter = toolkitSlug ? [toolkitSlug] : undefined;
-                const result = await searchComposioTools(query, toolkitFilter);
+                const normalized = normalizeComposioSearchRequest({ query, toolkitSlug });
+                const toolkitFilter = normalized.toolkitSlug ? [normalized.toolkitSlug] : undefined;
+                const result = await searchComposioTools(normalized.query, toolkitFilter);
 
                 // Filter to curated toolkits only (skip if a specific toolkit was requested —
                 // the API already filtered server-side)
-                const filtered = toolkitSlug
+                const filtered = normalized.toolkitSlug
                     ? result.items
                     : result.items.filter(t => CURATED_TOOLKIT_SLUGS.has(t.toolkitSlug));
 

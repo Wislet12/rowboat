@@ -96,29 +96,61 @@ describe("RealPermissionChecker", () => {
         });
     });
 
-    it("gates composio-execute with a toolkit/tool request", async () => {
+    it("allows clearly read-only composio actions without interrupting the user", async () => {
         const { checker } = makeChecker(new Error("must not be called"), {
             "composio-execute-tool": "composio-execute",
         });
-        expect(
-            await checker.check({
-                ...input,
-                toolId: "builtin:composio-execute-tool",
-                toolName: "composio-execute-tool",
-                input: {
-                    toolkitSlug: "gmail",
-                    toolSlug: "GMAIL_SEND_EMAIL",
-                    arguments: { to: "a@b.c" },
-                },
-            }),
-        ).toEqual({
-            required: true,
-            request: {
-                kind: "composio",
-                toolkitSlug: "gmail",
-                toolSlug: "GMAIL_SEND_EMAIL",
-            },
+        for (const toolSlug of [
+            "GOOGLECALENDAR_EVENTS_LIST",
+            "GMAIL_FETCH_EMAILS",
+            "GITHUB_ISSUES_LIST_FOR_REPO",
+            "NOTION_SEARCH_NOTION_PAGE",
+        ]) {
+            await expect(
+                checker.check({
+                    ...input,
+                    toolId: "builtin:composio-execute-tool",
+                    toolName: "composio-execute-tool",
+                    input: {
+                        toolkitSlug: "connected-toolkit",
+                        toolSlug,
+                        arguments: {},
+                    },
+                }),
+            ).resolves.toEqual({ required: false });
+        }
+    });
+
+    it("gates mutating and ambiguous composio actions with a toolkit/tool request", async () => {
+        const { checker } = makeChecker(new Error("must not be called"), {
+            "composio-execute-tool": "composio-execute",
         });
+        for (const toolSlug of [
+            "GMAIL_SEND_EMAIL",
+            "GOOGLECALENDAR_CREATE_EVENT",
+            "GMAIL_GET_OR_CREATE_LABEL",
+            "CUSTOM_PROCESS_REQUEST",
+        ]) {
+            await expect(
+                checker.check({
+                    ...input,
+                    toolId: "builtin:composio-execute-tool",
+                    toolName: "composio-execute-tool",
+                    input: {
+                        toolkitSlug: "gmail",
+                        toolSlug,
+                        arguments: { to: "a@b.c" },
+                    },
+                }),
+            ).resolves.toEqual({
+                required: true,
+                request: {
+                    kind: "composio",
+                    toolkitSlug: "gmail",
+                    toolSlug,
+                },
+            });
+        }
     });
 
     it("gates composio-execute with malformed input via the generic request", async () => {

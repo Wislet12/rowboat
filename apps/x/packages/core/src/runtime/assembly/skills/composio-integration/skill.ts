@@ -113,6 +113,14 @@ Use **short keyword queries**, not full sentences:
 | "get profile" | "fetch the authenticated user's profile details" |
 | "create spreadsheet" | "create a new Google Sheets spreadsheet with data" |
 
+For upcoming Google Calendar events, use exactly
+
+\`\`\`
+composio-search-tools({ query: "list events", toolkitSlug: "googlecalendar" })
+\`\`\`
+
+Then read the returned schema and execute \`GOOGLECALENDAR_EVENTS_LIST\` with \`calendarId: "primary"\` plus the requested RFC3339 \`timeMin\` and \`timeMax\` range. Do not include provider names or prose in the search query.
+
 If the first search returns 0 results, try a different short query (e.g., "issues" instead of "list issues").
 
 ## Passing Arguments

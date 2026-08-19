@@ -27,6 +27,90 @@ const McpExecuteInput = z.object({
     toolName: z.string(),
 });
 
+// Composio uses descriptive action slugs rather than an explicit read/write
+// capability bit. Keep this deterministic and fail closed: an action is
+// considered read-only only when it contains a known read verb and contains
+// no known side-effect verb. Mutation wins for mixed slugs such as
+// GMAIL_GET_OR_CREATE_LABEL.
+const COMPOSIO_READ_TOKENS = new Set([
+    "COUNT",
+    "DESCRIBE",
+    "FETCH",
+    "FIND",
+    "GET",
+    "INSPECT",
+    "LIST",
+    "LOOKUP",
+    "QUERY",
+    "READ",
+    "RETRIEVE",
+    "SEARCH",
+    "VIEW",
+]);
+
+const COMPOSIO_MUTATION_TOKENS = new Set([
+    "ACCEPT",
+    "ADD",
+    "APPROVE",
+    "ARCHIVE",
+    "ASSIGN",
+    "BOOK",
+    "CANCEL",
+    "CLOSE",
+    "CONNECT",
+    "COPY",
+    "CREATE",
+    "DECLINE",
+    "DELETE",
+    "DISABLE",
+    "DISCONNECT",
+    "EDIT",
+    "ENABLE",
+    "EXECUTE",
+    "FORWARD",
+    "INVITE",
+    "MARK",
+    "MERGE",
+    "MODIFY",
+    "MOVE",
+    "POST",
+    "PUBLISH",
+    "REJECT",
+    "REMOVE",
+    "REOPEN",
+    "REPLY",
+    "RESCHEDULE",
+    "RUN",
+    "SCHEDULE",
+    "SEND",
+    "SHARE",
+    "SIGN",
+    "STAR",
+    "START",
+    "STOP",
+    "SUBSCRIBE",
+    "TRASH",
+    "TRIGGER",
+    "UNASSIGN",
+    "UNSHARE",
+    "UNSTAR",
+    "UNSUBSCRIBE",
+    "UPDATE",
+    "UPLOAD",
+    "WRITE",
+]);
+
+export function isReadOnlyComposioToolSlug(toolSlug: string): boolean {
+    const tokens = toolSlug
+        .toUpperCase()
+        .split(/[^A-Z0-9]+/)
+        .filter(Boolean);
+    if (tokens.some((token) => COMPOSIO_MUTATION_TOKENS.has(token))) {
+        return false;
+    }
+    return tokens.some((token) => COMPOSIO_READ_TOKENS.has(token));
+}
+
 // Bridges the deterministic permission rules. Policy is declared per tool in
 // the builtin catalog (tools/types.ts) and the checker FAILS CLOSED: any
 // tool without a "none" declaration — undeclared builtins, mcp:* attachments
@@ -73,6 +157,12 @@ export class RealPermissionChecker implements IPermissionChecker {
                 return { required: true, request: genericRequest(input) };
             case "composio-execute": {
                 const parsed = ComposioExecuteInput.safeParse(input.input);
+                if (
+                    parsed.success &&
+                    isReadOnlyComposioToolSlug(parsed.data.toolSlug)
+                ) {
+                    return { required: false };
+                }
                 return {
                     required: true,
                     request: parsed.success
