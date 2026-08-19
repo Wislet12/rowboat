@@ -12,6 +12,7 @@ import {
   SearchIcon,
   Table2,
   Trash2,
+  Upload,
 } from 'lucide-react'
 
 import {
@@ -39,6 +40,7 @@ interface TreeNode {
 export type KnowledgeViewActions = {
   createNote: (parentPath?: string) => void
   addGoogleDoc: (parentPath?: string) => void
+  importNotes: (parentPath?: string) => Promise<string[]>
   createFolder: (parentPath?: string) => Promise<string>
   rename: (path: string, newName: string, isDir: boolean) => Promise<void>
   remove: (path: string) => Promise<void>
@@ -220,6 +222,15 @@ export function KnowledgeView({
               onClick={() => onModeChange('files')}
             />
           </div>
+          <button
+            type="button"
+            onClick={() => { void actions.importNotes(currentFolder?.path) }}
+            className="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-background px-3 text-sm font-medium text-foreground transition-colors hover:bg-accent"
+            aria-label="Import notes into Brain"
+          >
+            <Upload className="size-4" />
+            Import
+          </button>
           <VoiceNoteButton onNoteCreated={onVoiceNoteCreated} />
         </div>
       </div>
@@ -323,6 +334,7 @@ function QuickActions({
       <SectionHeader label="Quick actions" />
       <div className="flex flex-wrap gap-2">
         <QuickAction icon={FilePlus} label="New note" onClick={() => actions.createNote(parent)} />
+        <QuickAction icon={Upload} label="Import files" onClick={() => { void actions.importNotes(parent) }} />
         <QuickAction icon={GoogleDriveIcon} label="Add Google Doc" onClick={() => actions.addGoogleDoc(parent)} />
         <QuickAction icon={SearchIcon} label="Search" onClick={onOpenSearch} />
         <QuickAction
@@ -789,6 +801,10 @@ function RowContextMenu({
             <ContextMenuItem onClick={() => actions.addGoogleDoc(node.path)}>
               <GoogleDriveIcon className="mr-2 size-4" />
               Add Google Doc
+            </ContextMenuItem>
+            <ContextMenuItem onClick={() => { void actions.importNotes(node.path) }}>
+              <Upload className="mr-2 size-4" />
+              Import Files
             </ContextMenuItem>
             <ContextMenuItem onClick={() => void actions.createFolder(node.path)}>
               <FolderPlus className="mr-2 size-4" />

@@ -129,6 +129,7 @@ import { search } from '@x/core/dist/search/search.js';
 import { resolveMeetingPrep } from '@x/core/dist/knowledge/meeting_prep.js';
 import { readPrepNoteForEvent } from '@x/core/dist/knowledge/meeting_prep_brief.js';
 import { invalidateKnowledgeIndex } from '@x/core/dist/knowledge/knowledge_index.js';
+import { importBrainNotes, IMPORT_NOTE_DIALOG_EXTENSIONS } from '@x/core/dist/knowledge/import_notes.js';
 import { versionHistory, voice } from '@x/core';
 import { classifySchedule, processRowboatInstruction } from '@x/core/dist/knowledge/inline_tasks.js';
 import { getBillingInfo } from '@x/core/dist/billing/billing.js';
@@ -2262,6 +2263,24 @@ export function setupIpcHandlers() {
         properties: ['openFile', 'multiSelections'],
       });
       return { paths: result.canceled ? [] : result.filePaths };
+    },
+    'knowledge:importNotes': async (event, args) => {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const result = await dialog.showOpenDialog(win!, {
+        title: 'Import notes into Brain',
+        properties: ['openFile', 'multiSelections'],
+        filters: [
+          { name: 'Notes, documents, data, and images', extensions: IMPORT_NOTE_DIALOG_EXTENSIONS },
+          { name: 'All files', extensions: ['*'] },
+        ],
+      });
+      if (result.canceled || result.filePaths.length === 0) {
+        return { canceled: true, imported: [], failures: [] };
+      }
+
+      const imported = await importBrainNotes(result.filePaths, args.targetFolder);
+      if (imported.imported.length > 0) invalidateKnowledgeIndex();
+      return { canceled: false, ...imported };
     },
     // Knowledge version history handlers
     'knowledge:history': async (_event, args) => {

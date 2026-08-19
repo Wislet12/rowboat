@@ -18,8 +18,10 @@ import {
   Mic,
   MoreVertical,
   PanelLeftClose,
+  Pause,
   Pencil,
   Pin,
+  Play,
   SquarePen,
   Trash2,
   Plug,
@@ -212,9 +214,11 @@ type SidebarContentPanelProps = {
   /** Which primary destination is currently active, for nav highlighting. */
   activeNav?: 'home' | 'email' | 'meetings' | 'code' | 'knowledge' | 'agents' | 'apps' | 'workspaces' | null
   /** Live meeting recording state, so the recording row can show its indicator/stop. */
-  meetingRecordingState?: 'idle' | 'connecting' | 'recording' | 'stopping'
+  meetingRecordingState?: 'idle' | 'connecting' | 'recording' | 'paused' | 'stopping'
   recordingMeetingSource?: string | null
   onToggleMeetingRecording?: () => void
+  onPauseMeetingRecording?: () => void
+  onResumeMeetingRecording?: () => void
 } & React.ComponentProps<typeof Sidebar>
 
 function formatEventTime(ts: string): string {
@@ -466,6 +470,8 @@ export function SidebarContentPanel({
   meetingRecordingState = 'idle',
   recordingMeetingSource = null,
   onToggleMeetingRecording,
+  onPauseMeetingRecording,
+  onResumeMeetingRecording,
   ...props
 }: SidebarContentPanelProps) {
   const [hasOauthError, setHasOauthError] = useState(false)
@@ -819,15 +825,17 @@ export function SidebarContentPanel({
   // one active recording, so it must show even for ad-hoc recordings or meetings
   // that aren't the upcoming one previewed here.
   const meetingIsRecording = meetingRecordingState === 'recording'
+    || meetingRecordingState === 'paused'
     || meetingRecordingState === 'connecting'
     || meetingRecordingState === 'stopping'
   const meetingIsBusy = meetingRecordingState === 'connecting' || meetingRecordingState === 'stopping'
+  const meetingIsPaused = meetingRecordingState === 'paused'
   // Title of the meeting being recorded, when it's the upcoming one we preview.
   const recordingMeeting = previewMeeting != null && recordingMeetingSource === previewMeeting.source
     ? previewMeeting
     : null
   const meetingSublabel = meetingIsRecording
-    ? (recordingMeeting?.summary ?? 'Recording…')
+    ? (recordingMeeting?.summary ?? (meetingIsPaused ? 'Recording paused' : 'Recording…'))
     : (previewMeeting ? `${previewMeeting.summary} · ${formatMeetingTime(previewMeeting)}` : null)
 
   return (
@@ -922,6 +930,26 @@ export function SidebarContentPanel({
                       <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-500 opacity-75" />
                       <span className="relative inline-flex size-2 rounded-full bg-red-500" />
                     </span>
+                    {!meetingIsBusy && (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            aria-label={meetingIsPaused ? 'Resume meeting recording' : 'Pause meeting recording'}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              if (meetingIsPaused) onResumeMeetingRecording?.()
+                              else onPauseMeetingRecording?.()
+                            }}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            className="flex aspect-square w-5 items-center justify-center rounded-md text-sidebar-foreground hover:bg-sidebar-accent"
+                          >
+                            {meetingIsPaused ? <Play className="size-3.5 fill-current" /> : <Pause className="size-3.5 fill-current" />}
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent side="bottom">{meetingIsPaused ? 'Resume recording' : 'Pause recording'}</TooltipContent>
+                      </Tooltip>
+                    )}
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <button

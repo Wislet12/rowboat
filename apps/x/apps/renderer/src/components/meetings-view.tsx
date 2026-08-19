@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Calendar, ChevronDown, ChevronRight, Clock, ExternalLink, FileText, Loader2, MapPin, Mic, Search, Sparkles, Square, UserPlus, UserRound, UsersRound, Video, X } from 'lucide-react'
+import { Calendar, ChevronDown, ChevronRight, Clock, ExternalLink, FileText, Loader2, MapPin, Mic, Pause, Play, Search, Sparkles, Square, UserPlus, UserRound, UsersRound, Video, X } from 'lucide-react'
 import { Streamdown } from 'streamdown'
 
 import { Button } from '@/components/ui/button'
@@ -63,6 +63,8 @@ type MeetingsViewProps = {
   onRenameNote: (path: string, name: string) => Promise<void>
   onDeleteNote: (path: string) => Promise<void>
   onTakeMeetingNotes: () => void
+  onPauseMeeting: () => void
+  onResumeMeeting: () => void
   onSearchMeetingNotes: () => void
   meetingState: MeetingTranscriptionState
   meetingSummarizing?: boolean
@@ -1141,6 +1143,8 @@ function getMeetingButtonLabel(state: MeetingTranscriptionState): string {
       return 'Starting...'
     case 'recording':
       return 'Stop recording'
+    case 'paused':
+      return 'Stop recording'
     case 'stopping':
       return 'Stopping...'
     case 'idle':
@@ -1155,6 +1159,8 @@ export function MeetingsView({
   onRenameNote,
   onDeleteNote,
   onTakeMeetingNotes,
+  onPauseMeeting,
+  onResumeMeeting,
   onSearchMeetingNotes,
   meetingState,
   meetingSummarizing = false,
@@ -1256,6 +1262,8 @@ export function MeetingsView({
 
   const isBusy = meetingState === 'connecting' || meetingState === 'stopping' || meetingSummarizing
   const isRecording = meetingState === 'recording'
+  const isPaused = meetingState === 'paused'
+  const isCapturing = isRecording || isPaused
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-[#f8f8f9] dark:bg-[#0b0b0d]">
@@ -1268,16 +1276,28 @@ export function MeetingsView({
               <Search className="mr-2 size-4" />
               Search notes
             </Button>
+            {isCapturing && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={isPaused ? onResumeMeeting : onPauseMeeting}
+                aria-label={isPaused ? 'Resume meeting recording' : 'Pause meeting recording'}
+              >
+                {isPaused ? <Play className="mr-2 size-4" /> : <Pause className="mr-2 size-4" />}
+                {isPaused ? 'Resume' : 'Pause'}
+              </Button>
+            )}
             <Button
               type="button"
               size="sm"
-              variant={isRecording ? 'destructive' : 'default'}
+              variant={isCapturing ? 'destructive' : 'default'}
               disabled={isBusy}
               onClick={onTakeMeetingNotes}
             >
               {meetingSummarizing || meetingState === 'connecting' || meetingState === 'stopping' ? (
                 <Loader2 className="mr-2 size-4 animate-spin" />
-              ) : isRecording ? (
+              ) : isCapturing ? (
                 <Square className="mr-2 size-3.5" />
               ) : (
                 <Mic className="mr-2 size-4" />
@@ -1287,7 +1307,7 @@ export function MeetingsView({
           </div>
 	        </div>
         <p className="mt-1 text-[14px] text-black/50 dark:text-white/[0.52]">
-          Upcoming events and meeting notes.
+          {isPaused ? 'Recording paused. Notes remain available while capture is paused.' : 'Upcoming events and meeting notes.'}
         </p>
       </div>
       <div className="flex-1 overflow-auto">

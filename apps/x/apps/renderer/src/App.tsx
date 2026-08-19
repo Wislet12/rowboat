@@ -150,6 +150,7 @@ import { useTheme } from '@/contexts/theme-context'
 import { TokenUsageMenu } from '@/components/token-usage-menu'
 import { useJarvisExecutionAuthority } from '@/hooks/use-jarvis-execution-authority'
 import { useRowboatRealtimeVoice } from '@/hooks/use-rowboat-realtime-voice'
+import { touchWorkspaceTree } from '@/lib/workspace-tree-updates'
 
 type DirEntry = z.infer<typeof workspace.DirEntry>
 type RunEventType = z.infer<typeof RunEvent>
@@ -976,6 +977,18 @@ function App() {
   const fileLoadRequestIdRef = useRef(0)
   const initialContentByPathRef = useRef<Map<string, string>>(new Map())
   const recentLocalMarkdownWritesRef = useRef<Map<string, number>>(new Map())
+  const markRecentLocalMarkdownWrite = useCallback((path: string) => {
+    if (!path.endsWith('.md')) return
+    const now = Date.now()
+    recentLocalMarkdownWritesRef.current.set(path, now)
+    if (recentLocalMarkdownWritesRef.current.size > 200) {
+      for (const [knownPath, timestamp] of recentLocalMarkdownWritesRef.current.entries()) {
+        if (now - timestamp > 10_000) {
+          recentLocalMarkdownWritesRef.current.delete(knownPath)
+        }
+      }
+    }
+  }, [])
   const untitledRenameReadyPathsRef = useRef<Set<string>>(new Set())
 
   // Pending app-navigation result to process once navigation functions are ready
@@ -1329,13 +1342,15 @@ function App() {
   const handleToggleMeetingRef = useRef<(() => void) | undefined>(undefined)
   const meetingTranscription = useMeetingTranscription(() => {
     handleToggleMeetingRef.current?.()
-  })
+  }, markRecentLocalMarkdownWrite)
 
   // Keep the tray menu in sync with meeting capture ("Start meeting notes"
   // vs "Stop recording & generate notes").
   useEffect(() => {
     void window.ipc
-      .invoke('meeting:setRecordingState', { recording: meetingTranscription.state === 'recording' })
+      .invoke('meeting:setRecordingState', {
+        recording: meetingTranscription.state === 'recording' || meetingTranscription.state === 'paused',
+      })
       .catch(() => { /* tray may be unavailable */ })
   }, [meetingTranscription.state])
 
@@ -1343,7 +1358,7 @@ function App() {
   // generate notes, exactly like a manual stop. Listener only exists while
   // recording, so a stale signal can never toggle a new recording ON.
   useEffect(() => {
-    if (meetingTranscription.state !== 'recording') return
+    if (meetingTranscription.state !== 'recording' && meetingTranscription.state !== 'paused') return
     return window.ipc.on('meeting:externalCallEnded', () => {
       handleToggleMeetingRef.current?.()
     })
@@ -2451,19 +2466,6 @@ function App() {
     })
   }, [])
 
-  const markRecentLocalMarkdownWrite = useCallback((path: string) => {
-    if (!path.endsWith('.md')) return
-    const now = Date.now()
-    recentLocalMarkdownWritesRef.current.set(path, now)
-    if (recentLocalMarkdownWritesRef.current.size > 200) {
-      for (const [knownPath, timestamp] of recentLocalMarkdownWritesRef.current.entries()) {
-        if (now - timestamp > 10_000) {
-          recentLocalMarkdownWritesRef.current.delete(knownPath)
-        }
-      }
-    }
-  }, [])
-
   const consumeRecentLocalMarkdownWrite = useCallback((path: string, windowMs: number = 2_500) => {
     const timestamp = recentLocalMarkdownWritesRef.current.get(path)
     if (timestamp === undefined) return false
@@ -2643,7 +2645,11 @@ function App() {
   // Listen to workspace change events
   useEffect(() => {
     const cleanup = window.ipc.on('workspace:didChange', async (event) => {
-      loadDirectory().then(setTree)
+      if (event.type === 'changed') {
+        setTree((previous) => touchWorkspaceTree(previous, new Set([event.path]), Date.now()) as TreeNode[])
+      } else {
+        loadDirectory().then(setTree)
+      }
 
       const changedPath = event.type === 'changed' ? event.path : null
       const changedPaths = (event.type === 'bulkChanged' ? event.paths : []) ?? []
@@ -6343,6 +6349,34 @@ function App() {
       setGoogleDocPickerTargetFolder(parentPath)
       setGoogleDocPickerOpen(true)
     },
+    importNotes: async (parentPath: string = 'knowledge'): Promise<string[]> => {
+      const result = await window.ipc.invoke('knowledge:importNotes', { targetFolder: parentPath })
+      if (result.canceled) return []
+
+      if (result.failures.length > 0) {
+        const firstFailure = result.failures[0]
+        const detail = firstFailure
+          ? `${firstFailure.sourcePath.split(/[\\/]/).pop()}: ${firstFailure.error}`
+          : 'One or more files could not be imported.'
+        toast.error(
+          result.imported.length > 0
+            ? `Imported ${result.imported.length}; ${result.failures.length} failed`
+            : 'Could not import notes',
+          { description: detail },
+        )
+      }
+
+      if (result.imported.length === 0) return []
+      const importedPaths = result.imported.map((item) => item.path)
+      const parentPaths = new Set(importedPaths.map((itemPath) => itemPath.split('/').slice(0, -1).join('/')))
+      setExpandedPaths((previous) => new Set([...previous, ...parentPaths]))
+      setTree(await loadDirectory())
+      navigateToFile(importedPaths[0])
+      if (result.failures.length === 0) {
+        toast.success(result.imported.length === 1 ? 'Note imported into Brain' : `${result.imported.length} notes imported into Brain`)
+      }
+      return importedPaths
+    },
     createFolder: async (parentPath: string = 'knowledge'): Promise<string> => {
       try {
         let index = 1
@@ -6524,7 +6558,7 @@ function App() {
     onOpenInNewTab: (path: string) => {
       openFileInNewTab(path)
     },
-  }), [tree, selectedPath, isGraphOpen, selectedBackgroundTask, workspaceRoot, navigateToFile, navigateToView, openFileInNewTab, fileTabs, closeFileTab, removeEditorCacheForPath])
+  }), [tree, selectedPath, isGraphOpen, selectedBackgroundTask, workspaceRoot, navigateToFile, navigateToView, openFileInNewTab, fileTabs, closeFileTab, removeEditorCacheForPath, loadDirectory])
 
   // Drives the mascot product tour through the app's main sections
   const handleTourNavigate = useCallback((target: TourNavTarget) => {
@@ -6647,7 +6681,7 @@ function App() {
   }, [])
 
   const handleToggleMeeting = useCallback(async () => {
-    if (meetingTranscription.state === 'recording') {
+    if (meetingTranscription.state === 'recording' || meetingTranscription.state === 'paused') {
       await meetingTranscription.stop()
       const recordingStartedAt = meetingRecordingStartedAtMsRef.current
       meetingRecordingStartedAtMsRef.current = null
@@ -6719,6 +6753,16 @@ function App() {
     }
   }, [meetingTranscription, handleVoiceNoteCreated, startMeetingNow])
   handleToggleMeetingRef.current = handleToggleMeeting
+
+  const handlePauseMeeting = useCallback(async () => {
+    await meetingTranscription.pause()
+    toast.success('Meeting recording paused')
+  }, [meetingTranscription])
+
+  const handleResumeMeeting = useCallback(async () => {
+    await meetingTranscription.resume()
+    toast.success('Meeting recording resumed')
+  }, [meetingTranscription])
 
   // Listen for calendar block "join meeting & take notes" events
   useEffect(() => {
@@ -7291,6 +7335,8 @@ function App() {
               meetingRecordingState={meetingTranscription.state}
               recordingMeetingSource={recordingMeetingSource}
               onToggleMeetingRecording={() => { void handleToggleMeeting() }}
+              onPauseMeetingRecording={() => { void handlePauseMeeting() }}
+              onResumeMeetingRecording={() => { void handleResumeMeeting() }}
             />
             <SidebarInset
               className={cn(
@@ -7491,6 +7537,8 @@ function App() {
                     onRenameNote={(path, name) => knowledgeActions.rename(path, name, false)}
                     onDeleteNote={(path) => knowledgeActions.remove(path)}
                     onTakeMeetingNotes={() => { void handleToggleMeeting() }}
+                    onPauseMeeting={() => { void handlePauseMeeting() }}
+                    onResumeMeeting={() => { void handleResumeMeeting() }}
                     onSearchMeetingNotes={() => {
                       setSearchDefaultScope('knowledge')
                       setSearchKnowledgeScope('meetings')
@@ -7570,6 +7618,7 @@ function App() {
                     actions={{
                       createNote: knowledgeActions.createNote,
                       addGoogleDoc: knowledgeActions.addGoogleDoc,
+                      importNotes: knowledgeActions.importNotes,
                       createFolder: knowledgeActions.createFolder,
                       rename: knowledgeActions.rename,
                       remove: knowledgeActions.remove,

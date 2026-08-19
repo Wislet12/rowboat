@@ -22,7 +22,7 @@ import { AppSummarySchema, RegistryRecordSchema, RowboatAppManifestSchema } from
 import { BrowserPageSnapshotSchema, BrowserStateSchema, DisplayMediaRequestSchema, HttpAuthRequestSchema } from './browser-control.js';
 import { BillingInfoSchema } from './billing.js';
 import { CreditActivatedEventSchema, CreditsStateSchema, ReferralClaimResultSchema } from './credits.js';
-import { EmailBlockSchema, GmailThreadSchema } from './blocks.js';
+import { GmailThreadSchema } from './blocks.js';
 import { PermissionDecision, ApprovalPolicy, CodingAgent, type CodeRunFeedEvent } from './code-mode.js';
 import { NotificationSettingsSchema } from './notification-settings.js';
 import { TurnLimitsSettingsSchema } from './turn-limits.js';
@@ -2089,6 +2089,25 @@ const ipcSchemas = {
     }),
     res: z.object({
       paths: z.array(z.string()),
+    }),
+  },
+  'knowledge:importNotes': {
+    req: z.object({
+      targetFolder: RelPath.optional(),
+    }),
+    res: z.object({
+      canceled: z.boolean(),
+      imported: z.array(z.object({
+        path: RelPath,
+        sourcePath: RelPath,
+        title: z.string(),
+        format: z.string(),
+        contentLength: z.number().int().nonnegative(),
+      })),
+      failures: z.array(z.object({
+        sourcePath: z.string(),
+        error: z.string(),
+      })),
     }),
   },
   // Knowledge version history channels

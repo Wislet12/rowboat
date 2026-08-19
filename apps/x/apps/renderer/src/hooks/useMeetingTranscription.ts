@@ -5,7 +5,7 @@ import { finalizeDeepgramStream } from '@/lib/deepgram-finalize';
 import { useRowboatAccount } from '@/hooks/useRowboatAccount';
 import { fetchRowboatConfig } from '@/hooks/use-rowboat-config';
 
-export type MeetingTranscriptionState = 'idle' | 'connecting' | 'recording' | 'stopping';
+export type MeetingTranscriptionState = 'idle' | 'connecting' | 'recording' | 'paused' | 'stopping';
 
 const DEEPGRAM_PARAMS = new URLSearchParams({
     model: 'nova-3',
@@ -50,6 +50,8 @@ const SILENCE_CHECK_INTERVAL_MS = 5 * 1000;
 // calendar end so a quiet stretch never cuts a live meeting short.
 const TRACK_POLL_INTERVAL_MS = 3 * 1000;
 const MUTE_POLLS_TO_STOP = 3;
+const TRANSCRIPT_CHECKPOINT_MS = 5_000;
+const PAUSE_KEEPALIVE_MS = 8_000;
 
 // The ScreenCaptureKit quirk above is macOS-only; on Windows the track's "ended"
 // event fires normally (handled by the listener in start()), so the poll below is
@@ -143,10 +145,24 @@ function formatTranscript(entries: TranscriptEntry[], date: string, calendarEven
     return lines.join('\n');
 }
 
+export function mergeMeetingTranscriptContent(existing: string, generated: string): string {
+    const nextBlock = generated.match(/```transcript\n[\s\S]*?\n```/)?.[0];
+    if (!nextBlock) return existing || generated;
+    if (!existing.trim()) return generated;
+    const currentBlockPattern = /```transcript\n[\s\S]*?\n```/;
+    if (currentBlockPattern.test(existing)) {
+        return existing.replace(currentBlockPattern, nextBlock);
+    }
+    return `${existing.trimEnd()}\n\n${nextBlock}`;
+}
+
 // ---------------------------------------------------------------------------
 // Hook
 // ---------------------------------------------------------------------------
-export function useMeetingTranscription(onAutoStop?: () => void) {
+export function useMeetingTranscription(
+    onAutoStop?: () => void,
+    onBeforePersist?: (path: string) => void,
+) {
     const { refresh: refreshRowboatAccount } = useRowboatAccount();
     const [state, setState] = useState<MeetingTranscriptionState>('idle');
     const wsRef = useRef<WebSocket | null>(null);
@@ -158,6 +174,8 @@ export function useMeetingTranscription(onAutoStop?: () => void) {
     const interimRef = useRef<Map<number, { speaker: string; text: string }>>(new Map());
     const notePathRef = useRef<string>('');
     const writeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const pauseKeepaliveRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const pausedRef = useRef(false);
     // Silence detection: timestamp of the last speech-level audio on either
     // channel, plus the interval that checks it. calendarEndMsRef holds the
     // linked event's end time (null if none).
@@ -171,6 +189,8 @@ export function useMeetingTranscription(onAutoStop?: () => void) {
     const trackPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const onAutoStopRef = useRef(onAutoStop);
     onAutoStopRef.current = onAutoStop;
+    const onBeforePersistRef = useRef(onBeforePersist);
+    onBeforePersistRef.current = onBeforePersist;
     const dateRef = useRef<string>('');
     const calendarEventRef = useRef<CalendarEventMeta | undefined>(undefined);
 
@@ -186,23 +206,40 @@ export function useMeetingTranscription(onAutoStop?: () => void) {
             }
         }
         if (entries.length === 0) return;
-        const content = formatTranscript(entries, dateRef.current, calendarEventRef.current);
+        const generatedContent = formatTranscript(entries, dateRef.current, calendarEventRef.current);
         try {
+            let content = generatedContent;
+            try {
+                const current = await window.ipc.invoke('workspace:readFile', {
+                    path: notePathRef.current,
+                    encoding: 'utf8',
+                });
+                content = mergeMeetingTranscriptContent(current.data, generatedContent);
+            } catch {
+                // The first checkpoint may race note creation. The complete
+                // generated note is still a safe fallback.
+            }
+            onBeforePersistRef.current?.(notePathRef.current);
             await window.ipc.invoke('workspace:writeFile', {
                 path: notePathRef.current,
                 data: content,
                 opts: { encoding: 'utf8' },
             });
+            onBeforePersistRef.current?.(notePathRef.current);
         } catch (err) {
             console.error('[meeting] Failed to write transcript:', err);
         }
     }, []);
 
     const scheduleDebouncedWrite = useCallback(() => {
-        if (writeTimerRef.current) clearTimeout(writeTimerRef.current);
+        // Coalesce high-frequency interim transcript events into a bounded
+        // checkpoint. Resetting the timer on every word can starve writes;
+        // writing every word can flood the workspace watcher and freeze the UI.
+        if (writeTimerRef.current) return;
         writeTimerRef.current = setTimeout(() => {
+            writeTimerRef.current = null;
             void writeTranscriptToFile();
-        }, 1000);
+        }, TRANSCRIPT_CHECKPOINT_MS);
     }, [writeTranscriptToFile]);
 
     const stopInputCapture = useCallback(() => {
@@ -241,6 +278,11 @@ export function useMeetingTranscription(onAutoStop?: () => void) {
             clearInterval(trackPollingRef.current);
             trackPollingRef.current = null;
         }
+        if (pauseKeepaliveRef.current) {
+            clearInterval(pauseKeepaliveRef.current);
+            pauseKeepaliveRef.current = null;
+        }
+        pausedRef.current = false;
         stopInputCapture();
         if (wsRef.current) {
             wsRef.current.onclose = null;
@@ -252,6 +294,7 @@ export function useMeetingTranscription(onAutoStop?: () => void) {
     const start = useCallback(async (calendarEvent?: CalendarEventMeta): Promise<string | null> => {
         if (state !== 'idle') return null;
         setState('connecting');
+        pausedRef.current = false;
 
         // Run independent setup steps in parallel for faster startup
         const [headphoneResult, wsResult, micResult, systemResult] = await Promise.allSettled([
@@ -430,6 +473,9 @@ export function useMeetingTranscription(onAutoStop?: () => void) {
             let mutedPolls = 0;
             if (trackPollingRef.current) clearInterval(trackPollingRef.current);
             trackPollingRef.current = setInterval(() => {
+                // A manual pause is authoritative: keep the capture session alive
+                // until the user explicitly resumes or stops it.
+                if (pausedRef.current) return;
                 if (pollTrack.readyState === 'ended') {
                     console.log('[meeting] system-audio track ended (poll) — auto-stopping');
                     onAutoStopRef.current?.();
@@ -464,6 +510,7 @@ export function useMeetingTranscription(onAutoStop?: () => void) {
         processorRef.current = processor;
 
         processor.onaudioprocess = (e) => {
+            if (pausedRef.current) return;
             if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
 
             const micRaw = e.inputBuffer.getChannelData(0);
@@ -553,6 +600,7 @@ export function useMeetingTranscription(onAutoStop?: () => void) {
         lastAudioActivityRef.current = Date.now();
         if (silenceCheckRef.current) clearInterval(silenceCheckRef.current);
         silenceCheckRef.current = setInterval(() => {
+            if (pausedRef.current) return;
             const silentMs = Date.now() - lastAudioActivityRef.current;
             const endMs = calendarEndMsRef.current;
             const pastCalendarEnd = endMs != null && Date.now() > endMs;
@@ -589,8 +637,47 @@ export function useMeetingTranscription(onAutoStop?: () => void) {
         return notePath;
     }, [state, cleanup, scheduleDebouncedWrite, refreshRowboatAccount]);
 
-    const stop = useCallback(async () => {
+    const pause = useCallback(async () => {
         if (state !== 'recording') return;
+        pausedRef.current = true;
+        setState('paused');
+        if (writeTimerRef.current) {
+            clearTimeout(writeTimerRef.current);
+            writeTimerRef.current = null;
+        }
+        await writeTranscriptToFile();
+        if (audioCtxRef.current?.state === 'running') {
+            await audioCtxRef.current.suspend();
+        }
+        if (nudgeToastIdRef.current !== null) {
+            toast.dismiss(nudgeToastIdRef.current);
+            nudgeToastIdRef.current = null;
+        }
+        if (pauseKeepaliveRef.current) clearInterval(pauseKeepaliveRef.current);
+        pauseKeepaliveRef.current = setInterval(() => {
+            const ws = wsRef.current;
+            if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'KeepAlive' }));
+            }
+        }, PAUSE_KEEPALIVE_MS);
+    }, [state, writeTranscriptToFile]);
+
+    const resume = useCallback(async () => {
+        if (state !== 'paused') return;
+        if (pauseKeepaliveRef.current) {
+            clearInterval(pauseKeepaliveRef.current);
+            pauseKeepaliveRef.current = null;
+        }
+        lastAudioActivityRef.current = Date.now();
+        if (audioCtxRef.current?.state === 'suspended') {
+            await audioCtxRef.current.resume();
+        }
+        pausedRef.current = false;
+        setState('recording');
+    }, [state]);
+
+    const stop = useCallback(async () => {
+        if (state !== 'recording' && state !== 'paused') return;
         setState('stopping');
 
         stopInputCapture();
@@ -602,5 +689,5 @@ export function useMeetingTranscription(onAutoStop?: () => void) {
         setState('idle');
     }, [state, cleanup, stopInputCapture, writeTranscriptToFile]);
 
-    return { state, start, stop };
+    return { state, start, pause, resume, stop };
 }
