@@ -16,7 +16,7 @@ type HookCallbacks = {
   onAssistantTranscript?: (transcript: RowboatRealtimeTranscript) => void
   onBargeIn?: () => void
   onDelegate?: (delegation: RowboatRealtimeDelegation) => Promise<string>
-  onGetContext?: () => Promise<RowboatRealtimeContextSnapshot | null | undefined>
+  onGetContext?: (query?: string) => Promise<RowboatRealtimeContextSnapshot | null | undefined>
   onError?: (error: RowboatRealtimeSessionError) => void
 }
 
@@ -175,9 +175,9 @@ export function useRowboatRealtimeVoice(enabled: boolean, callbacks: HookCallbac
           if (!callback) return Promise.reject(new Error('Rowboat’s delegation runtime is unavailable.'))
           return callback(delegation)
         },
-        onGetContext: async () => (
+        onGetContext: async (query) => (
           callbacksRef.current.onGetContext
-            ? await callbacksRef.current.onGetContext()
+            ? await callbacksRef.current.onGetContext(query)
             : null
         ),
         onError: (nextError) => {

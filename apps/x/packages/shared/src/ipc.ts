@@ -2110,6 +2110,109 @@ const ipcSchemas = {
       })),
     }),
   },
+  'knowledge:notebooks:create': {
+    req: z.object({ title: z.string().min(1).max(120) }),
+    res: z.object({
+      path: RelPath,
+      version: z.literal(1),
+      title: z.string(),
+      createdAt: z.string(),
+      updatedAt: z.string(),
+      sources: z.array(z.object({
+        path: RelPath,
+        title: z.string(),
+        enabled: z.boolean(),
+        contextMode: z.enum(['off', 'overview', 'full']),
+        addedAt: z.string(),
+      })),
+    }),
+  },
+  'knowledge:notebooks:get': {
+    req: z.object({ path: RelPath }),
+    res: z.object({
+      path: RelPath,
+      version: z.literal(1),
+      title: z.string(),
+      createdAt: z.string(),
+      updatedAt: z.string(),
+      sources: z.array(z.object({
+        path: RelPath,
+        title: z.string(),
+        enabled: z.boolean(),
+        contextMode: z.enum(['off', 'overview', 'full']),
+        addedAt: z.string(),
+      })),
+    }),
+  },
+  'knowledge:notebooks:setSourceEnabled': {
+    req: z.object({
+      path: RelPath,
+      sourcePath: RelPath,
+      enabled: z.boolean(),
+    }),
+    res: z.object({
+      path: RelPath,
+      version: z.literal(1),
+      title: z.string(),
+      createdAt: z.string(),
+      updatedAt: z.string(),
+      sources: z.array(z.object({
+        path: RelPath,
+        title: z.string(),
+        enabled: z.boolean(),
+        contextMode: z.enum(['off', 'overview', 'full']),
+        addedAt: z.string(),
+      })),
+    }),
+  },
+  'knowledge:notebooks:setSourceContextMode': {
+    req: z.object({
+      path: RelPath,
+      sourcePath: RelPath,
+      contextMode: z.enum(['off', 'overview', 'full']),
+    }),
+    res: z.object({
+      path: RelPath,
+      version: z.literal(1),
+      title: z.string(),
+      createdAt: z.string(),
+      updatedAt: z.string(),
+      sources: z.array(z.object({
+        path: RelPath,
+        title: z.string(),
+        enabled: z.boolean(),
+        contextMode: z.enum(['off', 'overview', 'full']),
+        addedAt: z.string(),
+      })),
+    }),
+  },
+  'knowledge:notebooks:getContext': {
+    req: z.object({
+      path: RelPath,
+      query: z.string().max(2_000).optional(),
+    }),
+    res: z.object({
+      kind: z.literal('notebook'),
+      path: RelPath,
+      contextId: z.string(),
+      title: z.string(),
+      query: z.string().optional(),
+      sources: z.array(z.object({
+        id: z.string(),
+        path: RelPath,
+        title: z.string(),
+        content: z.string(),
+        truncated: z.boolean(),
+        contextMode: z.enum(['overview', 'full']),
+      })),
+      selectedSourceCount: z.number().int().nonnegative(),
+      unavailableSources: z.array(z.object({
+        path: RelPath,
+        title: z.string(),
+      })),
+      capturedAt: z.string(),
+    }),
+  },
   // Knowledge version history channels
   'knowledge:history': {
     req: z.object({ path: RelPath }),

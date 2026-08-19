@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { useCallback, useEffect, useLayoutEffect, useState, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useRef } from 'react'
 import { workspace } from '@x/shared';
 import type { RowboatRealtimeContextSnapshot } from '@x/shared/src/realtime-voice-context.js';
 import { RunEvent } from '@x/shared/src/runs.js';
@@ -921,6 +921,11 @@ function App() {
   // Folder being browsed inside the knowledge view (null = root overview).
   // Lives in ViewState so folder drill-down participates in back/forward history.
   const [knowledgeViewFolderPath, setKnowledgeViewFolderPath] = useState<string | null>(null)
+  const activeNotebookPath = useMemo(() => {
+    if (!isKnowledgeViewOpen || !knowledgeViewFolderPath) return null
+    const normalized = knowledgeViewFolderPath.replace(/\\/g, '/').replace(/\/+$/g, '')
+    return /^knowledge\/Brain\/Notebooks\/[^/]+$/.test(normalized) ? normalized : null
+  }, [isKnowledgeViewOpen, knowledgeViewFolderPath])
   const [googleDocPickerOpen, setGoogleDocPickerOpen] = useState(false)
   const [googleDocPickerTargetFolder, setGoogleDocPickerTargetFolder] = useState('knowledge')
   const [isChatHistoryOpen, setIsChatHistoryOpen] = useState(false)
@@ -1013,6 +1018,7 @@ function App() {
   // Frontmatter state: store raw frontmatter per file path
   const frontmatterByPathRef = useRef<Map<string, string | null>>(new Map())
   const activeNoteContextPathRef = useRef<string | null>(null)
+  const activeNotebookContextPathRef = useRef<string | null>(null)
 
   // Version history state
   const [versionHistoryPath, setVersionHistoryPath] = useState<string | null>(null)
@@ -1133,7 +1139,7 @@ function App() {
   const [realtimeLastUserText, setRealtimeLastUserText] = useState('')
   const [realtimeLastAssistantText, setRealtimeLastAssistantText] = useState('')
   const realtimeDelegateRef = useRef<((delegation: RowboatRealtimeDelegation) => Promise<string>) | null>(null)
-  const realtimeContextProviderRef = useRef<(() => Promise<RowboatRealtimeContextSnapshot | null>) | null>(null)
+  const realtimeContextProviderRef = useRef<((query?: string) => Promise<RowboatRealtimeContextSnapshot | null>) | null>(null)
   const realtimeBargeInRef = useRef<(() => void) | null>(null)
   const realtimeDelegationSessionRef = useRef<string | null>(null)
   const foregroundDelegationRef = useRef<{ callId: string; turnId: string | null } | null>(null)
@@ -1168,9 +1174,9 @@ function App() {
       if (!callback) return Promise.reject(new Error('Rowboat’s delegation runtime is unavailable.'))
       return callback(delegation)
     },
-    onGetContext: async () => (
+    onGetContext: async (query) => (
       realtimeContextProviderRef.current
-        ? await realtimeContextProviderRef.current()
+        ? await realtimeContextProviderRef.current(query)
         : null
     ),
   })
@@ -2402,6 +2408,25 @@ function App() {
     }
   }, [selectedPath])
 
+  // Notebook lifecycle mirrors note lifecycle but carries a collection
+  // identity. Opening Beta always closes Alpha first, which lets extensions
+  // clear notebook-scoped caches without inspecting the chat transcript.
+  useEffect(() => {
+    const previousPath = activeNotebookContextPathRef.current
+    if (previousPath === activeNotebookPath) return
+    if (previousPath) {
+      window.dispatchEvent(new CustomEvent('rowboat:notebook-context-close', {
+        detail: { path: previousPath },
+      }))
+    }
+    activeNotebookContextPathRef.current = activeNotebookPath
+    if (activeNotebookPath) {
+      window.dispatchEvent(new CustomEvent('rowboat:notebook-context-open', {
+        detail: { path: activeNotebookPath, replacedPath: previousPath },
+      }))
+    }
+  }, [activeNotebookPath])
+
   // Active-note lifecycle: opening a markdown note replaces (never stacks
   // with) the previous context. Consumers that need UI lifecycle visibility
   // can subscribe to these events; model requests still re-authorize and
@@ -3592,6 +3617,24 @@ function App() {
         metadata: Record<string, string | string[]>
       }
     | {
+        kind: 'notebook'
+        path: string
+        contextId: string
+        title: string
+        query?: string
+        sources: Array<{
+          id: string
+          path: string
+          title: string
+          content: string
+          truncated: boolean
+          contextMode: 'overview' | 'full'
+        }>
+        selectedSourceCount: number
+        unavailableSources: Array<{ path: string; title: string }>
+        capturedAt?: string
+      }
+    | {
         kind: 'browser'
         url: string
         title: string
@@ -3603,7 +3646,7 @@ function App() {
         metadata?: { description?: string; headings?: string[]; language?: string }
         untrusted: true
       }
-  const buildMiddlePaneContext = async (): Promise<MiddlePaneContextPayload | undefined> => {
+  const buildMiddlePaneContext = async (query?: string): Promise<MiddlePaneContextPayload | undefined> => {
     // Nothing visible in the middle pane when the right pane is maximized.
     if (isRightPaneMaximized) return undefined
 
@@ -3646,6 +3689,21 @@ function App() {
       return undefined
     }
 
+    // A Notebook is a first-class multi-source middle-pane context. Its
+    // manifest owns source selection, and the main process re-opens every
+    // selected source for each turn so permission changes take effect at once.
+    if (activeNotebookPath) {
+      try {
+        return await window.ipc.invoke('knowledge:notebooks:getContext', {
+          path: activeNotebookPath,
+          ...(query?.trim() ? { query: query.trim().slice(0, 2_000) } : {}),
+        })
+      } catch (error) {
+        console.warn('[notebook-context] Notebook is no longer readable; omitting it', activeNotebookPath, error)
+        return undefined
+      }
+    }
+
     // Note case: only markdown files are meaningfully readable as context.
     const path = selectedPathRef.current
     if (!path || !path.endsWith('.md')) return undefined
@@ -3678,18 +3736,18 @@ function App() {
   // Realtime voice uses the same fresh, permission-gated snapshot builder as
   // typed chat and delegated voice tasks. No captured note body is retained in
   // the hook: the provider asks again on every spoken turn.
-  realtimeContextProviderRef.current = async () => {
-    const context = await buildMiddlePaneContext()
+  realtimeContextProviderRef.current = async (query) => {
+    const context = await buildMiddlePaneContext(query)
     return context ?? { kind: 'empty', capturedAt: new Date().toISOString() }
   }
 
-  // Replace the live session context immediately when the visible note/page
+  // Replace the live session context immediately when the visible note/notebook/page
   // changes. Per-turn refresh in the WebRTC session remains authoritative and
   // catches permission revocation, navigation, and unsaved edits as well.
   useEffect(() => {
     if (!rowboatRealtimeVoiceRef.current.active) return
     void rowboatRealtimeVoiceRef.current.refreshContext()
-  }, [selectedPath, isBrowserOpen, isRightPaneMaximized, debouncedContent])
+  }, [selectedPath, activeNotebookPath, isBrowserOpen, isRightPaneMaximized, debouncedContent])
 
   const handlePromptSubmit = async (
     message: PromptInputMessage,
@@ -3928,7 +3986,7 @@ function App() {
           })
         }
 
-        const middlePaneContext = await buildMiddlePaneContext()
+        const middlePaneContext = await buildMiddlePaneContext(userMessage)
         await sendSessionMessage({
           sessionId: currentRunId,
           input: {
@@ -3944,7 +4002,7 @@ function App() {
           searchEnabled: searchEnabled || undefined,
         })
       } else {
-        const middlePaneContext = await buildMiddlePaneContext()
+        const middlePaneContext = await buildMiddlePaneContext(userMessage)
         await sendSessionMessage({
           sessionId: currentRunId,
           input: {
@@ -4029,7 +4087,7 @@ function App() {
       .invoke('turnLimits:getSettings', null)
       .then((settings) => settings.chatMaxModelCalls)
       .catch(() => undefined)
-    const middlePane = await buildMiddlePaneContext()
+    const middlePane = await buildMiddlePaneContext(request)
     const videoFrames = inCallRef.current ? video.collectFrames() : []
     const messageContent = videoFrames.length > 0
       ? [
@@ -6352,6 +6410,8 @@ function App() {
     importNotes: async (parentPath: string = 'knowledge'): Promise<string[]> => {
       const result = await window.ipc.invoke('knowledge:importNotes', { targetFolder: parentPath })
       if (result.canceled) return []
+      const normalizedParentPath = parentPath.replace(/\\/g, '/').replace(/\/+$/g, '')
+      const importingIntoNotebook = /^knowledge\/Brain\/Notebooks\/[^/]+(?:\/.*)?$/.test(normalizedParentPath)
 
       if (result.failures.length > 0) {
         const firstFailure = result.failures[0]
@@ -6371,11 +6431,35 @@ function App() {
       const parentPaths = new Set(importedPaths.map((itemPath) => itemPath.split('/').slice(0, -1).join('/')))
       setExpandedPaths((previous) => new Set([...previous, ...parentPaths]))
       setTree(await loadDirectory())
-      navigateToFile(importedPaths[0])
+      if (!importingIntoNotebook) navigateToFile(importedPaths[0])
       if (result.failures.length === 0) {
-        toast.success(result.imported.length === 1 ? 'Note imported into Brain' : `${result.imported.length} notes imported into Brain`)
+        toast.success(importingIntoNotebook
+          ? (result.imported.length === 1 ? 'Source added to notebook' : `${result.imported.length} sources added to notebook`)
+          : (result.imported.length === 1 ? 'Note imported into Brain' : `${result.imported.length} notes imported into Brain`))
       }
       return importedPaths
+    },
+    createNotebook: async (title: string): Promise<string> => {
+      const notebook = await window.ipc.invoke('knowledge:notebooks:create', { title })
+      setTree(await loadDirectory())
+      setExpandedPaths((previous) => new Set([...previous, 'knowledge/Brain', 'knowledge/Brain/Notebooks']))
+      return notebook.path
+    },
+    getNotebook: async (path: string) => {
+      return window.ipc.invoke('knowledge:notebooks:get', { path })
+    },
+    setNotebookSourceEnabled: async (path: string, sourcePath: string, enabled: boolean) => {
+      return window.ipc.invoke('knowledge:notebooks:setSourceEnabled', { path, sourcePath, enabled })
+    },
+    setNotebookSourceContextMode: async (
+      path: string,
+      sourcePath: string,
+      contextMode: 'off' | 'overview' | 'full',
+    ) => {
+      return window.ipc.invoke('knowledge:notebooks:setSourceContextMode', { path, sourcePath, contextMode })
+    },
+    askNotebook: (prompt: string) => {
+      handlePromptSubmitRef.current?.({ text: prompt, files: [] })
     },
     createFolder: async (parentPath: string = 'knowledge'): Promise<string> => {
       try {
@@ -7619,6 +7703,11 @@ function App() {
                       createNote: knowledgeActions.createNote,
                       addGoogleDoc: knowledgeActions.addGoogleDoc,
                       importNotes: knowledgeActions.importNotes,
+                      createNotebook: knowledgeActions.createNotebook,
+                      getNotebook: knowledgeActions.getNotebook,
+                      setNotebookSourceEnabled: knowledgeActions.setNotebookSourceEnabled,
+                      setNotebookSourceContextMode: knowledgeActions.setNotebookSourceContextMode,
+                      askNotebook: knowledgeActions.askNotebook,
                       createFolder: knowledgeActions.createFolder,
                       rename: knowledgeActions.rename,
                       remove: knowledgeActions.remove,

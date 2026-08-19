@@ -130,6 +130,15 @@ import { resolveMeetingPrep } from '@x/core/dist/knowledge/meeting_prep.js';
 import { readPrepNoteForEvent } from '@x/core/dist/knowledge/meeting_prep_brief.js';
 import { invalidateKnowledgeIndex } from '@x/core/dist/knowledge/knowledge_index.js';
 import { importBrainNotes, IMPORT_NOTE_DIALOG_EXTENSIONS } from '@x/core/dist/knowledge/import_notes.js';
+import {
+  buildNotebookContext,
+  createNotebook,
+  findNotebookPath,
+  getNotebook,
+  importNotebookSources,
+  setNotebookSourceContextMode,
+  setNotebookSourceEnabled,
+} from '@x/core/dist/knowledge/notebooks.js';
 import { versionHistory, voice } from '@x/core';
 import { classifySchedule, processRowboatInstruction } from '@x/core/dist/knowledge/inline_tasks.js';
 import { getBillingInfo } from '@x/core/dist/billing/billing.js';
@@ -2278,9 +2287,36 @@ export function setupIpcHandlers() {
         return { canceled: true, imported: [], failures: [] };
       }
 
-      const imported = await importBrainNotes(result.filePaths, args.targetFolder);
+      const notebookPath = findNotebookPath(args.targetFolder);
+      const imported = notebookPath
+        ? await importNotebookSources(notebookPath, result.filePaths)
+        : await importBrainNotes(result.filePaths, args.targetFolder);
       if (imported.imported.length > 0) invalidateKnowledgeIndex();
       return { canceled: false, ...imported };
+    },
+    'knowledge:notebooks:create': async (_event, args) => {
+      const notebook = await createNotebook(args.title);
+      invalidateKnowledgeIndex();
+      return notebook;
+    },
+    'knowledge:notebooks:get': async (_event, args) => {
+      return getNotebook(args.path);
+    },
+    'knowledge:notebooks:setSourceEnabled': async (_event, args) => {
+      const notebook = await setNotebookSourceEnabled(args.path, args.sourcePath, args.enabled);
+      invalidateKnowledgeIndex();
+      return notebook;
+    },
+    'knowledge:notebooks:setSourceContextMode': async (_event, args) => {
+      const notebook = await setNotebookSourceContextMode(args.path, args.sourcePath, args.contextMode);
+      invalidateKnowledgeIndex();
+      return notebook;
+    },
+    'knowledge:notebooks:getContext': async (_event, args) => {
+      // Every request re-opens the manifest and every enabled source through
+      // the canonical workspace boundary. Deleted or newly inaccessible
+      // sources therefore disappear from chat and voice context immediately.
+      return buildNotebookContext(args.path, args.query);
     },
     // Knowledge version history handlers
     'knowledge:history': async (_event, args) => {

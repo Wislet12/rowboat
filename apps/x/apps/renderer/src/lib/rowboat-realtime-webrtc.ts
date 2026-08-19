@@ -69,7 +69,7 @@ type RealtimeSessionCallbacks = {
   onAssistantTranscript?: (transcript: RowboatRealtimeTranscript) => void
   onBargeIn?: () => void
   onDelegate?: (delegation: RowboatRealtimeDelegation) => Promise<string>
-  onGetContext?: () => Promise<RowboatRealtimeContextSnapshot | null | undefined>
+  onGetContext?: (query?: string) => Promise<RowboatRealtimeContextSnapshot | null | undefined>
   onError?: (error: RowboatRealtimeSessionError) => void
 }
 
@@ -377,11 +377,11 @@ export class RowboatRealtimeWebRtcSession {
    * The revision guard prevents a slow Alpha capture from overwriting a newer
    * Beta capture when the user switches notes quickly.
    */
-  async refreshContext(): Promise<boolean> {
+  async refreshContext(query?: string): Promise<boolean> {
     const revision = ++this.contextRevision
     let snapshot: RowboatRealtimeContextSnapshot | null | undefined
     try {
-      snapshot = await this.callbacks.onGetContext?.()
+      snapshot = await this.callbacks.onGetContext?.(query)
     } catch {
       snapshot = null
     }
@@ -399,6 +399,8 @@ export class RowboatRealtimeWebRtcSession {
       kind: context.kind,
       contextId: context.kind === 'note'
         ? context.contextId
+        : context.kind === 'notebook'
+          ? context.contextId
         : context.kind === 'browser'
           ? context.snapshotId || context.tabId || context.url
           : '',
@@ -521,7 +523,7 @@ export class RowboatRealtimeWebRtcSession {
         this.callbacks.onInterimTranscript?.('')
         this.callbacks.onTranscript?.({ id: identity, text: transcript })
         const turnRevision = this.inputTurnRevision
-        void this.createResponseForTranscript(turnRevision)
+        void this.createResponseForTranscript(turnRevision, transcript)
       }
       return
     }
@@ -601,8 +603,8 @@ export class RowboatRealtimeWebRtcSession {
     }
   }
 
-  private async createResponseForTranscript(turnRevision: number): Promise<void> {
-    await this.refreshContext()
+  private async createResponseForTranscript(turnRevision: number, transcript: string): Promise<void> {
+    await this.refreshContext(transcript)
     if (
       this.closed
       || this.userSpeaking

@@ -118,6 +118,67 @@ describe('active note context encoding', () => {
   })
 })
 
+describe('active notebook context encoding', () => {
+  it('grounds answers with stable citations and drops the previous notebook', () => {
+    const encoded = convertFromMessages([
+      {
+        role: 'user',
+        content: 'Summarize alpha',
+        userMessageContext: {
+          middlePane: {
+            kind: 'notebook',
+            path: 'knowledge/Brain/Notebooks/alpha',
+            contextId: 'alpha@1',
+            title: 'Alpha',
+            sources: [{
+              id: 'S1',
+              path: 'knowledge/Brain/Notebooks/alpha/Sources/a.md',
+              title: 'Alpha source',
+              content: 'ALPHA_PRIVATE_FACT',
+              truncated: false,
+              contextMode: 'full',
+            }],
+            selectedSourceCount: 1,
+            unavailableSources: [],
+          },
+        },
+      },
+      { role: 'assistant', content: 'Alpha summary.' },
+      {
+        role: 'user',
+        content: 'Now answer from beta',
+        userMessageContext: {
+          middlePane: {
+            kind: 'notebook',
+            path: 'knowledge/Brain/Notebooks/beta',
+            contextId: 'beta@2',
+            title: 'Beta',
+            query: 'answer from beta',
+            sources: [{
+              id: 'S2',
+              path: 'knowledge/Brain/Notebooks/beta/Sources/b.md',
+              title: 'Beta source',
+              content: 'BETA_GROUNDED_FACT',
+              truncated: true,
+              contextMode: 'overview',
+            }],
+            selectedSourceCount: 1,
+            unavailableSources: [],
+          },
+        },
+      },
+    ])
+
+    const wire = JSON.stringify(encoded)
+    expect(wire).not.toContain('ALPHA_PRIVATE_FACT')
+    expect(wire).not.toContain('Alpha source')
+    expect(wire).toContain('BETA_GROUNDED_FACT')
+    expect(wire).toContain('[S2]')
+    expect(wire).toContain('Never invent a citation')
+    expect(wire).toContain('Discard every earlier note, notebook')
+  })
+})
+
 describe('active browser context encoding', () => {
   it('keeps only the newest tab snapshot and marks page content untrusted', () => {
     const encoded = convertFromMessages([

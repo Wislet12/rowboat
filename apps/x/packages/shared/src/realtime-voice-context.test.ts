@@ -35,6 +35,49 @@ describe('Realtime voice replacement context', () => {
     expect(instructions).toContain('Discard every earlier note or page snapshot')
   })
 
+  it('grounds a live notebook conversation and replaces its sources', () => {
+    const alpha = buildRowboatRealtimeInstructions({
+      kind: 'notebook',
+      path: 'knowledge/Brain/Notebooks/alpha',
+      contextId: 'alpha@1',
+      title: 'Alpha notebook',
+      sources: [{
+        id: 'S1',
+        path: 'knowledge/Brain/Notebooks/alpha/Sources/alpha.md',
+        title: 'Alpha source',
+        content: 'ALPHA_VOICE_ONLY',
+        truncated: false,
+        contextMode: 'full',
+      }],
+      selectedSourceCount: 1,
+      unavailableSources: [],
+    })
+    const beta = buildRowboatRealtimeInstructions({
+      kind: 'notebook',
+      path: 'knowledge/Brain/Notebooks/beta',
+      contextId: 'beta@1',
+      title: 'Beta notebook',
+      query: 'What is the beta finding?',
+      sources: [{
+        id: 'S1',
+        path: 'knowledge/Brain/Notebooks/beta/Sources/beta.md',
+        title: 'Beta source',
+        content: 'BETA_VOICE_ONLY',
+        truncated: true,
+        contextMode: 'overview',
+      }],
+      selectedSourceCount: 1,
+      unavailableSources: [],
+    })
+
+    expect(alpha).toContain('ALPHA_VOICE_ONLY')
+    expect(beta).toContain('BETA_VOICE_ONLY')
+    expect(beta).not.toContain('ALPHA_VOICE_ONLY')
+    expect(beta).toContain('only active notebook')
+    expect(beta).toContain('source ID')
+    expect(beta).toContain('rowboat_delegate')
+  })
+
   it('labels browser text as untrusted and prioritizes selected text', () => {
     const instructions = buildRowboatRealtimeInstructions({
       kind: 'browser',

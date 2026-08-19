@@ -80,6 +80,27 @@ export const UserMessageContext = z.object({
             metadata: z.record(z.string(), z.union([z.string(), z.array(z.string())])).optional(),
         }),
         z.object({
+            kind: z.literal("notebook"),
+            path: z.string(),
+            contextId: z.string(),
+            title: z.string(),
+            query: z.string().optional(),
+            sources: z.array(z.object({
+                id: z.string(),
+                path: z.string(),
+                title: z.string(),
+                content: z.string(),
+                truncated: z.boolean(),
+                contextMode: z.enum(['overview', 'full']),
+            })),
+            selectedSourceCount: z.number().int().nonnegative(),
+            unavailableSources: z.array(z.object({
+                path: z.string(),
+                title: z.string(),
+            })),
+            capturedAt: z.string().optional(),
+        }),
+        z.object({
             kind: z.literal("browser"),
             url: z.string(),
             title: z.string(),

@@ -243,6 +243,8 @@ describe('RowboatRealtimeWebRtcSession', () => {
     expect(updates[2].session.instructions).toContain('BETA-VOICE-ONLY')
     expect(updates[2].session.instructions).not.toContain('ALPHA-VOICE-ONLY')
     expect(peer.channel.sent.filter((event) => event.type === 'response.create')).toHaveLength(2)
+    expect(onGetContext).toHaveBeenNthCalledWith(2, 'What did we decide?')
+    expect(onGetContext).toHaveBeenNthCalledWith(3, 'What did we decide now?')
   })
 
   it('prevents a slow old-note capture from overwriting a newer note switch', async () => {
