@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { Message, MessageContent, MessageDownloadButton, MessageResponse } from './message'
+import { Message, MessageContent, MessageDownloadButton, MessageResponse, MessageSaveButton } from './message'
 
 afterEach(cleanup)
 
@@ -43,6 +43,32 @@ describe('assistant response actions', () => {
       markdown: '# Result\nDone',
       format: 'docx',
       title: 'Result',
+    }))
+  })
+
+  it('saves a response into the active Rowboat notebook artifact collection', async () => {
+    const invoke = vi.fn(async () => ({
+      path: 'knowledge/Brain/Notebooks/review/Artifacts/result.md',
+      title: 'Result',
+    }))
+    Object.defineProperty(window, 'ipc', {
+      configurable: true,
+      value: { invoke },
+    })
+
+    render(
+      <MessageSaveButton
+        text={'# Result\nGrounded answer [S1].'}
+        title="Result"
+        notebookPath="knowledge/Brain/Notebooks/review"
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Save response to notebook' }))
+
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('knowledge:saveChatOutput', {
+      markdown: '# Result\nGrounded answer [S1].',
+      title: 'Result',
+      notebookPath: 'knowledge/Brain/Notebooks/review',
     }))
   })
 })

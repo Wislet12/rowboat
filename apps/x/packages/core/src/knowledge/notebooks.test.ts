@@ -16,11 +16,14 @@ function notebook(
         enabled?: boolean;
         contextMode?: 'off' | 'overview' | 'full';
     }>,
+    retrievalProfile: 'fast' | 'balanced' | 'precise' = 'balanced',
 ): NotebookDescriptor {
     return {
         path,
         version: 1,
         title,
+        description: '',
+        retrievalProfile,
         createdAt: '2026-08-19T12:00:00.000Z',
         updatedAt: '2026-08-19T12:00:00.000Z',
         sources: sources.map((source) => ({
@@ -28,6 +31,9 @@ function notebook(
             enabled: source.enabled ?? true,
             contextMode: source.contextMode ?? (source.enabled === false ? 'off' : 'full'),
             addedAt: '2026-08-19T12:00:00.000Z',
+            available: true,
+            modifiedAt: 1_776_000_000_000,
+            size: 1_024,
         })),
     };
 }
@@ -121,5 +127,39 @@ describe('Brain notebooks', () => {
         expect(context.sources.find((source) => source.id === 'S2')?.content).not.toContain('END_MARKER');
         expect(context.sources.find((source) => source.id === 'S2')?.truncated).toBe(true);
         expect(JSON.stringify(context)).not.toContain('OFF_SECRET');
+    });
+
+    it('applies explicit fast and precise retrieval budgets with visible evidence', async () => {
+        const source = { path: 'knowledge/Brain/Notebooks/profiles/Sources/large.md', title: 'Large Source' };
+        const largeContent = Array.from({ length: 12 }, (_, index) => (
+            `needle section ${index}\n${String(index).repeat(4_900)}`
+        )).join('\n\n');
+        const fast = await buildNotebookContextFromManifest(
+            notebook('knowledge/Brain/Notebooks/profiles-fast', 'Fast', [source], 'fast'),
+            'needle',
+            async () => largeContent,
+        );
+        const precise = await buildNotebookContextFromManifest(
+            notebook('knowledge/Brain/Notebooks/profiles-precise', 'Precise', [source], 'precise'),
+            'needle',
+            async () => largeContent,
+        );
+
+        expect(fast.retrievalProfile).toBe('fast');
+        expect(fast.retrievalEvidence.selectedChunkCount).toBeLessThanOrEqual(2);
+        expect(precise.retrievalProfile).toBe('precise');
+        expect(precise.retrievalEvidence.selectedChunkCount).toBeGreaterThan(fast.retrievalEvidence.selectedChunkCount);
+        expect(precise.retrievalEvidence.candidateChunkCount).toBeGreaterThan(2);
+    });
+
+    it('changes the context identity when source content changes without a manifest timestamp change', async () => {
+        const manifest = notebook('knowledge/Brain/Notebooks/hash', 'Content Identity', [
+            { path: 'knowledge/Brain/Notebooks/hash/Sources/source.md', title: 'Source' },
+        ]);
+        const first = await buildNotebookContextFromManifest(manifest, '', async () => 'VERSION_ONE');
+        const second = await buildNotebookContextFromManifest(manifest, '', async () => 'VERSION_TWO');
+
+        expect(first.contextId).not.toBe(second.contextId);
+        expect(first.contextId).toContain(`${manifest.path}@${manifest.updatedAt}:`);
     });
 });

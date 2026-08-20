@@ -66,6 +66,27 @@ function isKnowledgeMarkdownRelPath(relPath: string): boolean {
   return normalized.startsWith('knowledge/') && normalized.endsWith('.md');
 }
 
+const TRANSIENT_WINDOWS_RENAME_CODES = new Set(['EBUSY', 'EPERM', 'ENOTEMPTY']);
+
+async function renameToTrashWithRetry(fromPath: string, toPath: string): Promise<void> {
+  const attempts = process.platform === 'win32' ? 16 : 1;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await fs.rename(fromPath, toPath);
+      return;
+    } catch (error) {
+      const code = error && typeof error === 'object' && 'code' in error
+        ? String(error.code)
+        : '';
+      if (!TRANSIENT_WINDOWS_RENAME_CODES.has(code) || attempt === attempts - 1) throw error;
+      // Windows search, antivirus, or Rowboat's own version-history worker can
+      // briefly retain a handle after the final note write. Keep deletion
+      // recoverable and bounded instead of falling back to permanent removal.
+      await new Promise((resolve) => setTimeout(resolve, 75 * (attempt + 1)));
+    }
+  }
+}
+
 // ============================================================================
 // File System Utilities
 // ============================================================================
@@ -415,7 +436,7 @@ export async function remove(
       }
     }
 
-    await fs.rename(filePath, finalTrashPath);
+    await renameToTrashWithRetry(filePath, finalTrashPath);
   } else {
     // Permanent delete
     if (stats.isDirectory()) {

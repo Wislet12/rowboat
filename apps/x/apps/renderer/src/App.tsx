@@ -6,7 +6,7 @@ import { RunEvent } from '@x/shared/src/runs.js';
 import type { ToolUIPart } from 'ai';
 import './App.css'
 import z from 'zod';
-import { CheckIcon, LoaderIcon, PanelLeftIcon, ArrowLeft, ArrowRight, MessageSquare, ChevronLeftIcon, ChevronRightIcon, Plus, HistoryIcon } from 'lucide-react';
+import { CheckIcon, LoaderIcon, PanelLeftIcon, ArrowLeft, ArrowRight, MessageSquare, ChevronLeftIcon, ChevronRightIcon, Plus, HistoryIcon, SaveIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { MarkdownEditor, type MarkdownEditorHandle } from './components/markdown-editor';
 import { ChatSidebar } from './components/chat-sidebar';
@@ -57,6 +57,7 @@ import {
   MessageContent,
   MessageCopyButton,
   MessageDownloadButton,
+  MessageSaveButton,
   MessageResponse,
 } from '@/components/ai-elements/message';
 import {
@@ -453,6 +454,19 @@ const isChatHistoryTabPath = (path: string) => path === CHAT_HISTORY_TAB_PATH
 const isHomeTabPath = (path: string) => path === HOME_TAB_PATH
 const isBaseFilePath = (path: string) => path.endsWith('.base') || path === BASES_DEFAULT_TAB_PATH
 const isCodeTabPath = (path: string) => path === CODE_TAB_PATH
+
+const getNotebookRootPath = (path: string): string | null => {
+  const normalized = path.replace(/\\/g, '/').replace(/\/+$/g, '')
+  return normalized.match(/^(knowledge\/Brain\/Notebooks\/[^/]+)/)?.[1] ?? null
+}
+
+const isNotebookRootPath = (path: string): boolean => getNotebookRootPath(path) === path.replace(/\\/g, '/').replace(/\/+$/g, '')
+
+const isNotebookSourcePath = (path: string): boolean => {
+  const normalized = path.replace(/\\/g, '/').replace(/\/+$/g, '')
+  const notebookRoot = getNotebookRootPath(normalized)
+  return Boolean(notebookRoot && normalized.startsWith(`${notebookRoot}/Sources/`) && normalized.endsWith('.md'))
+}
 
 const getSuggestedTopicTargetFolder = (category?: string) => {
   const normalized = category?.trim().toLowerCase()
@@ -2887,7 +2901,6 @@ function App() {
 
     const baseline = initialContentByPathRef.current.get(pathAtStart) ?? initialContentRef.current
     if (debouncedContent === baseline) return
-    if (!debouncedContent) return
     if (selectedPathRef.current === pathAtStart && debouncedContent !== editorContentRef.current) return
 
     const saveFile = async () => {
@@ -3014,6 +3027,44 @@ function App() {
     }
     saveFile()
   }, [debouncedContent, markRecentLocalMarkdownWrite, setHistory])
+
+  const saveCurrentNoteNow = useCallback(async () => {
+    const path = editorPathRef.current
+    if (!path || !path.endsWith('.md')) return
+
+    const body = editorContentRef.current
+    setIsSaving(true)
+    try {
+      await window.ipc.invoke('workspace:writeFile', {
+        path,
+        data: joinFrontmatter(frontmatterByPathRef.current.get(path) ?? null, body),
+        opts: { encoding: 'utf8' },
+      })
+      markRecentLocalMarkdownWrite(path)
+      analytics.noteEdited(path)
+      initialContentByPathRef.current.set(path, body)
+      initialContentRef.current = body
+      setEditorCacheForPath(path, body)
+      setLastSaved(new Date())
+      toast.success('Note saved')
+    } catch (error) {
+      console.error('Failed to save note:', error)
+      toast.error('Could not save note')
+    } finally {
+      setIsSaving(false)
+    }
+  }, [markRecentLocalMarkdownWrite, setEditorCacheForPath])
+
+  useEffect(() => {
+    const onSaveShortcut = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 's') return
+      if (!editorPathRef.current?.endsWith('.md')) return
+      event.preventDefault()
+      void saveCurrentNoteNow()
+    }
+    window.addEventListener('keydown', onSaveShortcut)
+    return () => window.removeEventListener('keydown', onSaveShortcut)
+  }, [saveCurrentNoteNow])
 
   // Close version history panel when switching files
   useEffect(() => {
@@ -6448,6 +6499,22 @@ function App() {
     getNotebook: async (path: string) => {
       return window.ipc.invoke('knowledge:notebooks:get', { path })
     },
+    updateNotebook: async (
+      path: string,
+      input: { title: string; description: string; retrievalProfile: 'fast' | 'balanced' | 'precise' },
+    ) => {
+      return window.ipc.invoke('knowledge:notebooks:update', { path, ...input })
+    },
+    deleteNotebook: async (path: string) => {
+      await window.ipc.invoke('knowledge:notebooks:delete', { path })
+      setTree(await loadDirectory())
+      setFileTabs((previous) => previous.filter((tab) => tab.path !== path && !tab.path.startsWith(`${path}/`)))
+      if (selectedPath?.startsWith(`${path}/`)) setSelectedPath(null)
+      if (activeNotebookPath === path) {
+        setKnowledgeViewFolderPath(null)
+        void navigateToView({ type: 'knowledge-view' })
+      }
+    },
     setNotebookSourceEnabled: async (path: string, sourcePath: string, enabled: boolean) => {
       return window.ipc.invoke('knowledge:notebooks:setSourceEnabled', { path, sourcePath, enabled })
     },
@@ -6457,6 +6524,21 @@ function App() {
       contextMode: 'off' | 'overview' | 'full',
     ) => {
       return window.ipc.invoke('knowledge:notebooks:setSourceContextMode', { path, sourcePath, contextMode })
+    },
+    updateNotebookSource: async (path: string, sourcePath: string, title: string) => {
+      return window.ipc.invoke('knowledge:notebooks:updateSource', { path, sourcePath, title })
+    },
+    removeNotebookSource: async (path: string, sourcePath: string) => {
+      const notebook = await window.ipc.invoke('knowledge:notebooks:removeSource', { path, sourcePath })
+      removeEditorCacheForPath(sourcePath)
+      initialContentByPathRef.current.delete(sourcePath)
+      untitledRenameReadyPathsRef.current.delete(sourcePath)
+      frontmatterByPathRef.current.delete(sourcePath)
+      const tabForSource = fileTabs.find((tab) => tab.path === sourcePath)
+      if (tabForSource) closeFileTab(tabForSource.id)
+      else if (selectedPath === sourcePath) setSelectedPath(null)
+      setTree(await loadDirectory())
+      return notebook
     },
     askNotebook: (prompt: string) => {
       handlePromptSubmitRef.current?.({ text: prompt, files: [] })
@@ -6531,6 +6613,16 @@ function App() {
     collapseAll: () => setExpandedPaths(new Set()),
     rename: async (oldPath: string, newName: string, isDir: boolean) => {
       try {
+        const notebookRoot = getNotebookRootPath(oldPath)
+        if (notebookRoot && isNotebookRootPath(oldPath) && isDir) {
+          await window.ipc.invoke('knowledge:notebooks:update', { path: notebookRoot, title: newName })
+          return
+        }
+        if (notebookRoot && isNotebookSourcePath(oldPath) && !isDir) {
+          const title = newName.replace(/\.md$/i, '')
+          await window.ipc.invoke('knowledge:notebooks:updateSource', { path: notebookRoot, sourcePath: oldPath, title })
+          return
+        }
         const parts = oldPath.split('/')
         // For files, ensure .md extension
         const finalName = isDir ? newName : (newName.endsWith('.md') ? newName : `${newName}.md`)
@@ -6582,6 +6674,30 @@ function App() {
     },
     remove: async (path: string) => {
       try {
+        const notebookRoot = getNotebookRootPath(path)
+        if (notebookRoot && isNotebookRootPath(path)) {
+          await window.ipc.invoke('knowledge:notebooks:delete', { path: notebookRoot })
+          setTree(await loadDirectory())
+          setFileTabs((previous) => previous.filter((tab) => tab.path !== notebookRoot && !tab.path.startsWith(`${notebookRoot}/`)))
+          if (selectedPath?.startsWith(`${notebookRoot}/`)) setSelectedPath(null)
+          if (activeNotebookPath === notebookRoot) {
+            setKnowledgeViewFolderPath(null)
+            void navigateToView({ type: 'knowledge-view' })
+          }
+          return
+        }
+        if (notebookRoot && isNotebookSourcePath(path)) {
+          await window.ipc.invoke('knowledge:notebooks:removeSource', { path: notebookRoot, sourcePath: path })
+          removeEditorCacheForPath(path)
+          initialContentByPathRef.current.delete(path)
+          untitledRenameReadyPathsRef.current.delete(path)
+          frontmatterByPathRef.current.delete(path)
+          setTree(await loadDirectory())
+          const sourceTab = fileTabs.find((tab) => tab.path === path)
+          if (sourceTab) closeFileTab(sourceTab.id)
+          else if (selectedPath === path) setSelectedPath(null)
+          return
+        }
         await window.ipc.invoke('workspace:remove', { path, opts: { trash: true } })
         if (path.endsWith('.md')) {
           removeEditorCacheForPath(path)
@@ -6642,7 +6758,7 @@ function App() {
     onOpenInNewTab: (path: string) => {
       openFileInNewTab(path)
     },
-  }), [tree, selectedPath, isGraphOpen, selectedBackgroundTask, workspaceRoot, navigateToFile, navigateToView, openFileInNewTab, fileTabs, closeFileTab, removeEditorCacheForPath, loadDirectory])
+  }), [tree, selectedPath, activeNotebookPath, isGraphOpen, selectedBackgroundTask, workspaceRoot, navigateToFile, navigateToView, openFileInNewTab, fileTabs, closeFileTab, removeEditorCacheForPath, loadDirectory])
 
   // Drives the mascot product tour through the app's main sections
   const handleTourNavigate = useCallback((target: TourNavTarget) => {
@@ -7147,6 +7263,7 @@ function App() {
           </MessageContent>
           <div className="flex items-center gap-0.5">
             <MessageCopyButton text={item.content} />
+            <MessageSaveButton text={item.content} title={`Chat response ${item.id}`} notebookPath={activeNotebookPath} />
             <MessageDownloadButton text={item.content} title={`Chat response ${item.id}`} />
           </div>
         </Message>
@@ -7489,6 +7606,20 @@ function App() {
                         <span>Saved</span>
                       </>
                     ) : null}
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <button
+                          type="button"
+                          aria-label="Save note"
+                          disabled={isSaving}
+                          onClick={() => void saveCurrentNoteNow()}
+                          className="titlebar-no-drag ml-1 flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
+                        >
+                          <SaveIcon className="h-4 w-4" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent>Save note (Ctrl+S)</TooltipContent>
+                    </Tooltip>
                   </div>
                 )}
                 {selectedPath && selectedPath.startsWith('knowledge/') && selectedPath.endsWith('.md') && (
@@ -7705,8 +7836,12 @@ function App() {
                       importNotes: knowledgeActions.importNotes,
                       createNotebook: knowledgeActions.createNotebook,
                       getNotebook: knowledgeActions.getNotebook,
+                      updateNotebook: knowledgeActions.updateNotebook,
+                      deleteNotebook: knowledgeActions.deleteNotebook,
                       setNotebookSourceEnabled: knowledgeActions.setNotebookSourceEnabled,
                       setNotebookSourceContextMode: knowledgeActions.setNotebookSourceContextMode,
+                      updateNotebookSource: knowledgeActions.updateNotebookSource,
+                      removeNotebookSource: knowledgeActions.removeNotebookSource,
                       askNotebook: knowledgeActions.askNotebook,
                       createFolder: knowledgeActions.createFolder,
                       rename: knowledgeActions.rename,
@@ -8237,6 +8372,7 @@ function App() {
                 recentFiles={recentWikiFiles}
                 visibleFiles={visibleKnowledgeFiles}
                 runId={runId}
+                activeNotebookPath={activeNotebookPath}
                 presetMessage={presetMessage}
                 onPresetMessageConsumed={() => setPresetMessage(undefined)}
                 getInitialDraft={(tabId) => chatDraftsRef.current.get(tabId)}

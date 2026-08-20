@@ -16,7 +16,9 @@ import {
   MessageSquareText,
   Network,
   Pencil,
+  Save,
   SearchIcon,
+  Settings2,
   Sparkles,
   Table2,
   TimerReset,
@@ -32,6 +34,16 @@ import {
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
 import { Input } from '@/components/ui/input'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import {
   Dialog,
   DialogContent,
@@ -58,6 +70,8 @@ type NotebookDescriptor = {
   path: string
   version: 1
   title: string
+  description: string
+  retrievalProfile: 'fast' | 'balanced' | 'precise'
   createdAt: string
   updatedAt: string
   sources: Array<{
@@ -66,6 +80,12 @@ type NotebookDescriptor = {
     enabled: boolean
     contextMode: 'off' | 'overview' | 'full'
     addedAt: string
+    sourceFilePath?: string
+    format?: string
+    contentLength?: number
+    available: boolean
+    modifiedAt: number | null
+    size: number | null
   }>
 }
 
@@ -75,8 +95,12 @@ export type KnowledgeViewActions = {
   importNotes: (parentPath?: string) => Promise<string[]>
   createNotebook: (title: string) => Promise<string>
   getNotebook: (path: string) => Promise<NotebookDescriptor>
+  updateNotebook: (path: string, input: { title: string; description: string; retrievalProfile: 'fast' | 'balanced' | 'precise' }) => Promise<NotebookDescriptor>
+  deleteNotebook: (path: string) => Promise<void>
   setNotebookSourceEnabled: (path: string, sourcePath: string, enabled: boolean) => Promise<NotebookDescriptor>
   setNotebookSourceContextMode: (path: string, sourcePath: string, contextMode: 'off' | 'overview' | 'full') => Promise<NotebookDescriptor>
+  updateNotebookSource: (path: string, sourcePath: string, title: string) => Promise<NotebookDescriptor>
+  removeNotebookSource: (path: string, sourcePath: string) => Promise<NotebookDescriptor>
   askNotebook: (prompt: string) => void
   createFolder: (parentPath?: string) => Promise<string>
   rename: (path: string, newName: string, isDir: boolean) => Promise<void>
@@ -517,6 +541,10 @@ function NotebookDetail({
   const [notebook, setNotebook] = useState<NotebookDescriptor | null>(null)
   const [loading, setLoading] = useState(true)
   const [busySource, setBusySource] = useState<string | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [sourceEditPath, setSourceEditPath] = useState<string | null>(null)
+  const [sourceDeletePath, setSourceDeletePath] = useState<string | null>(null)
   const sourceRefreshKey = useMemo(
     () => collectNotes(folder).map((source) => `${source.path}:${source.stat?.mtimeMs ?? 0}`).join('|'),
     [folder],
@@ -565,6 +593,9 @@ function NotebookDetail({
     }
   }, [actions, busySource, notebook])
 
+  const editedSource = notebook?.sources.find((source) => source.path === sourceEditPath) ?? null
+  const deletingSource = notebook?.sources.find((source) => source.path === sourceDeletePath) ?? null
+
   const selectedCount = notebook?.sources.filter((source) => source.enabled && source.contextMode !== 'off').length ?? 0
 
   return (
@@ -601,7 +632,7 @@ function NotebookDetail({
                 {notebook?.title ?? folder.name}
               </h2>
               <p className="mt-1 max-w-2xl text-sm leading-6 text-muted-foreground">
-                Ask questions in chat or voice. Rowboat retrieves only this notebook’s selected sources and cites them as S1, S2, and so on.
+                {notebook?.description || 'Ask questions in chat or voice. Rowboat retrieves only this notebook’s selected sources and cites them as S1, S2, and so on.'}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -620,6 +651,24 @@ function NotebookDetail({
                 <Upload className="size-3.5" />
                 Add sources
               </button>
+              <button
+                type="button"
+                disabled={!notebook}
+                onClick={() => setSettingsOpen(true)}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-xs font-semibold text-foreground hover:bg-accent disabled:opacity-40"
+              >
+                <Settings2 className="size-3.5" />
+                Edit + save
+              </button>
+              <button
+                type="button"
+                disabled={!notebook}
+                onClick={() => setDeleteOpen(true)}
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-red-500/25 bg-background px-3 text-xs font-semibold text-red-600 hover:bg-red-500/10 disabled:opacity-40"
+              >
+                <Trash2 className="size-3.5" />
+                Delete
+              </button>
             </div>
           </div>
         </div>
@@ -633,27 +682,34 @@ function NotebookDetail({
                   {selectedCount} of {notebook?.sources.length ?? 0} selected for the next chat or voice turn
                 </p>
               </div>
-              {notebook && notebook.sources.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    const enableAll = selectedCount !== notebook.sources.length
-                    void (async () => {
-                      try {
-                        for (const source of notebook.sources) {
-                          await actions.setNotebookSourceEnabled(notebook.path, source.path, enableAll)
+              <div className="flex items-center gap-2">
+                {notebook && (
+                  <span className="rounded-full border border-border bg-muted/60 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    {notebook.retrievalProfile} retrieval
+                  </span>
+                )}
+                {notebook && notebook.sources.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const enableAll = selectedCount !== notebook.sources.length
+                      void (async () => {
+                        try {
+                          for (const source of notebook.sources) {
+                            await actions.setNotebookSourceEnabled(notebook.path, source.path, enableAll)
+                          }
+                          await refresh()
+                        } catch (error) {
+                          toast(error instanceof Error ? error.message : 'Could not update source selection', 'error')
                         }
-                        await refresh()
-                      } catch (error) {
-                        toast(error instanceof Error ? error.message : 'Could not update source selection', 'error')
-                      }
-                    })()
-                  }}
-                  className="text-xs font-medium text-muted-foreground hover:text-foreground"
-                >
-                  {selectedCount === notebook.sources.length ? 'Clear all' : 'Select all'}
-                </button>
-              )}
+                      })()
+                    }}
+                    className="text-xs font-medium text-muted-foreground hover:text-foreground"
+                  >
+                    {selectedCount === notebook.sources.length ? 'Clear all' : 'Select all'}
+                  </button>
+                )}
+              </div>
             </div>
 
             {loading ? (
@@ -698,7 +754,9 @@ function NotebookDetail({
                       className="min-w-0 flex-1 text-left"
                     >
                       <span className="block truncate text-sm font-medium text-foreground">{source.title}</span>
-                      <span className="block truncate text-xs text-muted-foreground">S{index + 1} · {source.path.split('/').pop()}</span>
+                      <span className="block truncate text-xs text-muted-foreground">
+                        S{index + 1} · {source.format?.toUpperCase() || 'NOTE'} · {source.available ? 'Ready' : 'Unavailable'}
+                      </span>
                     </button>
                     <button
                       type="button"
@@ -722,6 +780,26 @@ function NotebookDetail({
                       title="Cycle context privacy: Full, Overview, Off"
                     >
                       {source.contextMode}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busySource === source.path}
+                      onClick={() => setSourceEditPath(source.path)}
+                      className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100 focus:opacity-100"
+                      aria-label={`Edit and save ${source.title}`}
+                      title="Edit source settings"
+                    >
+                      <Pencil className="size-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busySource === source.path}
+                      onClick={() => setSourceDeletePath(source.path)}
+                      className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-red-500/10 hover:text-red-600 group-hover:opacity-100 focus:opacity-100"
+                      aria-label={`Delete ${source.title}`}
+                      title="Delete source"
+                    >
+                      <Trash2 className="size-3.5" />
                     </button>
                     <ChevronRight className="size-4 shrink-0 text-muted-foreground/40 opacity-0 transition-opacity group-hover:opacity-100" />
                   </div>
@@ -757,7 +835,252 @@ function NotebookDetail({
       <div className="mt-4 rounded-xl border border-blue-500/20 bg-blue-500/[0.06] px-4 py-3 text-xs leading-5 text-muted-foreground">
         Context is replaced—not combined—when you open another notebook, note, meeting, or browser tab. Disabled or inaccessible sources are omitted immediately.
       </div>
+
+      {notebook && (
+        <NotebookSettingsDialog
+          open={settingsOpen}
+          onOpenChange={setSettingsOpen}
+          notebook={notebook}
+          onSave={async (input) => {
+            const updated = await actions.updateNotebook(notebook.path, input)
+            setNotebook(updated)
+          }}
+        />
+      )}
+      {notebook && editedSource && (
+        <SourceSettingsDialog
+          open={Boolean(sourceEditPath)}
+          onOpenChange={(open) => { if (!open) setSourceEditPath(null) }}
+          source={editedSource}
+          onOpenSource={() => onOpenNote(editedSource.path)}
+          onSave={async (title) => {
+            setBusySource(editedSource.path)
+            try {
+              const updated = await actions.updateNotebookSource(notebook.path, editedSource.path, title)
+              setNotebook(updated)
+              setSourceEditPath(null)
+            } finally {
+              setBusySource(null)
+            }
+          }}
+        />
+      )}
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete “{notebook?.title ?? folder.name}”?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The notebook, its sources, and saved artifacts will move to Rowboat’s recoverable trash. Chat and voice context will close immediately.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={(event) => {
+                event.preventDefault()
+                if (!notebook) return
+                void actions.deleteNotebook(notebook.path).then(() => {
+                  setDeleteOpen(false)
+                  onNavigate(null)
+                  toast('Notebook moved to trash', 'success')
+                }).catch((error) => {
+                  toast(error instanceof Error ? error.message : 'Could not delete notebook', 'error')
+                })
+              }}
+            >
+              Delete notebook
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={Boolean(sourceDeletePath)} onOpenChange={(open) => { if (!open) setSourceDeletePath(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete “{deletingSource?.title ?? 'source'}”?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The source note and its preserved original file will move to recoverable trash and will be removed from chat and voice immediately.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={Boolean(busySource)}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={!notebook || !deletingSource || Boolean(busySource)}
+              onClick={(event) => {
+                event.preventDefault()
+                if (!notebook || !deletingSource) return
+                setBusySource(deletingSource.path)
+                void actions.removeNotebookSource(notebook.path, deletingSource.path).then((updated) => {
+                  setNotebook(updated)
+                  setSourceDeletePath(null)
+                  toast('Source moved to trash', 'success')
+                }).catch((error) => {
+                  toast(error instanceof Error ? error.message : 'Could not delete source', 'error')
+                }).finally(() => setBusySource(null))
+              }}
+            >
+              Delete source
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
+  )
+}
+
+function NotebookSettingsDialog({
+  open,
+  onOpenChange,
+  notebook,
+  onSave,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  notebook: NotebookDescriptor
+  onSave: (input: { title: string; description: string; retrievalProfile: 'fast' | 'balanced' | 'precise' }) => Promise<void>
+}) {
+  const [title, setTitle] = useState(notebook.title)
+  const [description, setDescription] = useState(notebook.description)
+  const [retrievalProfile, setRetrievalProfile] = useState(notebook.retrievalProfile)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    setTitle(notebook.title)
+    setDescription(notebook.description)
+    setRetrievalProfile(notebook.retrievalProfile)
+  }, [notebook, open])
+
+  const save = async () => {
+    if (!title.trim() || saving) return
+    setSaving(true)
+    try {
+      await onSave({ title: title.trim(), description, retrievalProfile })
+      onOpenChange(false)
+      toast('Notebook saved', 'success')
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Could not save notebook', 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => { if (!saving) onOpenChange(next) }}>
+      <DialogContent className="sm:max-w-[560px]">
+        <DialogHeader>
+          <DialogTitle>Edit notebook</DialogTitle>
+          <DialogDescription>Save its purpose and choose how deeply Rowboat retrieves source context for chat and voice.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <label className="block space-y-1.5 text-sm font-medium text-foreground">
+            Name
+            <Input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={120} />
+          </label>
+          <label className="block space-y-1.5 text-sm font-medium text-foreground">
+            Purpose or instructions
+            <textarea
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              maxLength={2_000}
+              rows={4}
+              className="w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm font-normal outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              placeholder="What this notebook contains and how you plan to use it"
+            />
+          </label>
+          <div>
+            <span className="text-sm font-medium text-foreground">Retrieval profile</span>
+            <div className="mt-2 grid gap-2 sm:grid-cols-3">
+              {([
+                ['fast', 'Fast', 'Smallest relevant excerpts.'],
+                ['balanced', 'Balanced', 'Daily speed and grounding.'],
+                ['precise', 'Precise', 'Broader excerpts and neighboring context.'],
+              ] as const).map(([value, label, detail]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setRetrievalProfile(value)}
+                  className={cn(
+                    'rounded-lg border p-3 text-left transition-colors',
+                    retrievalProfile === value ? 'border-violet-500 bg-violet-500/10' : 'border-border hover:bg-accent/50',
+                  )}
+                >
+                  <span className="block text-sm font-semibold text-foreground">{label}</span>
+                  <span className="mt-1 block text-xs leading-5 text-muted-foreground">{detail}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <DialogFooter>
+          <button type="button" onClick={() => onOpenChange(false)} disabled={saving} className="h-9 rounded-lg border border-border px-4 text-sm font-medium hover:bg-accent">Cancel</button>
+          <button type="button" onClick={() => { void save() }} disabled={!title.trim() || saving} className="inline-flex h-9 items-center gap-2 rounded-lg bg-foreground px-4 text-sm font-medium text-background disabled:opacity-40">
+            <Save className="size-4" />
+            {saving ? 'Saving…' : 'Save notebook'}
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function SourceSettingsDialog({
+  open,
+  onOpenChange,
+  source,
+  onOpenSource,
+  onSave,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  source: NotebookDescriptor['sources'][number]
+  onOpenSource: () => void
+  onSave: (title: string) => Promise<void>
+}) {
+  const [title, setTitle] = useState(source.title)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (open) setTitle(source.title)
+  }, [open, source.title])
+
+  const save = async () => {
+    if (!title.trim() || saving) return
+    setSaving(true)
+    try {
+      await onSave(title.trim())
+      toast('Source saved', 'success')
+    } catch (error) {
+      toast(error instanceof Error ? error.message : 'Could not save source', 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => { if (!saving) onOpenChange(next) }}>
+      <DialogContent className="sm:max-w-[480px]">
+        <DialogHeader>
+          <DialogTitle>Edit source</DialogTitle>
+          <DialogDescription>Rename the citation label or open the source note to edit and autosave its contents.</DialogDescription>
+        </DialogHeader>
+        <label className="block space-y-1.5 text-sm font-medium text-foreground">
+          Citation title
+          <Input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={160} />
+        </label>
+        <div className="rounded-lg border border-border bg-muted/35 px-3 py-2 text-xs leading-5 text-muted-foreground">
+          {source.format?.toUpperCase() || 'NOTE'} · {source.available ? 'Ready for retrieval' : 'Source unavailable'} · {source.contentLength?.toLocaleString() ?? 'Unknown'} extracted characters
+        </div>
+        <DialogFooter>
+          <button type="button" onClick={onOpenSource} className="h-9 rounded-lg border border-border px-4 text-sm font-medium hover:bg-accent">Open and edit contents</button>
+          <button type="button" onClick={() => { void save() }} disabled={!title.trim() || saving} className="inline-flex h-9 items-center gap-2 rounded-lg bg-foreground px-4 text-sm font-medium text-background disabled:opacity-40">
+            <Save className="size-4" />
+            {saving ? 'Saving…' : 'Save source'}
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

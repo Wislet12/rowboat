@@ -16,6 +16,7 @@ import {
   MessageContent,
   MessageCopyButton,
   MessageDownloadButton,
+  MessageSaveButton,
   MessageResponse,
 } from '@/components/ai-elements/message'
 import { TurnActivityIndicator } from '@/components/turn-activity-indicator'
@@ -154,6 +155,7 @@ interface ChatSidebarProps {
   recentFiles?: string[]
   visibleFiles?: string[]
   runId?: string | null
+  activeNotebookPath?: string | null
   presetMessage?: string
   onPresetMessageConsumed?: () => void
   getInitialDraft?: (tabId: string) => string | undefined
@@ -228,6 +230,7 @@ export function ChatSidebar({
   recentFiles = [],
   visibleFiles = [],
   runId,
+  activeNotebookPath,
   presetMessage,
   onPresetMessageConsumed,
   getInitialDraft,
@@ -446,6 +449,7 @@ export function ChatSidebar({
           </MessageContent>
           <div className="flex items-center gap-0.5">
             <MessageCopyButton text={item.content} />
+            <MessageSaveButton text={item.content} title={`Chat response ${item.id}`} notebookPath={activeNotebookPath} />
             <MessageDownloadButton text={item.content} title={`Chat response ${item.id}`} />
           </div>
         </Message>

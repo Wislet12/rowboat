@@ -47,6 +47,34 @@ lifecycle.
 a result opens it, which starts the lifecycle above and makes it the new active
 context.
 
+## Notebook Studio lifecycle
+
+Notebook Studio is owned and stored entirely by Rowboat under
+`knowledge/Brain/Notebooks`; it does not call or depend on another JARVIS
+studio. Opening a notebook emits `rowboat:notebook-context-open`, and switching
+or closing emits `rowboat:notebook-context-close` before the replacement opens.
+Only one note, notebook, meeting, or browser snapshot can be active for a turn.
+
+Each turn re-reads the notebook manifest and every selected source. The manifest
+is the authority boundary: sources set to Off, deleted sources, missing files,
+and newly inaccessible files are omitted immediately. Every snapshot includes
+a content-derived context ID, stable `[S#]` citations, retrieval profile, and
+retrieval evidence counts. Fast, Balanced, and Precise profiles adjust the
+source budget; Precise also recalls neighboring chunks around strong matches.
+
+Lifecycle mutations are explicit and recoverable:
+
+- notebook name, purpose, and retrieval profile have an explicit Save action;
+- source citation titles have an explicit Save action, while source contents use
+  the standard note editor autosave or Ctrl/Cmd+S action;
+- source deletion removes manifest authority first, then moves the preserved
+  source files to Rowboat trash;
+- notebook deletion closes active chat/voice context immediately and moves the
+  notebook, sources, and saved artifacts to Rowboat trash; and
+- assistant responses can be copied, selected with the cursor, downloaded, or
+  saved into the active notebook's `Artifacts` folder (or Brain Chat Outputs
+  when no notebook is active).
+
 ## Browser-context pattern
 
 The same replacement rule applies to the embedded browser. At submit time,

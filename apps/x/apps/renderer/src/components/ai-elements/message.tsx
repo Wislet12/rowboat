@@ -21,10 +21,12 @@ import {
   DownloadIcon,
   Loader2Icon,
   PaperclipIcon,
+  SaveIcon,
   XIcon,
 } from "lucide-react";
 import type { ComponentProps, HTMLAttributes, ReactElement } from "react";
 import { createContext, memo, useContext, useEffect, useState } from "react";
+import { toast } from "sonner";
 import { Streamdown } from "streamdown";
 import {
   DropdownMenu,
@@ -133,6 +135,63 @@ export const MessageDownloadButton = ({
         ))}
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+};
+
+/** Save an assistant response as a durable Rowboat Brain or notebook artifact. */
+export const MessageSaveButton = ({
+  text,
+  title = "Chat response",
+  notebookPath,
+  className,
+}: {
+  text: string;
+  title?: string;
+  notebookPath?: string | null;
+  className?: string;
+}) => {
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  return (
+    <button
+      type="button"
+      aria-label={notebookPath ? "Save response to notebook" : "Save response to Brain"}
+      disabled={saving}
+      onClick={() => {
+        setSaving(true);
+        setSaved(false);
+        void window.ipc.invoke("knowledge:saveChatOutput", {
+          markdown: text,
+          title,
+          notebookPath: notebookPath ?? undefined,
+        })
+          .then(({ path }) => {
+            setSaved(true);
+            toast.success(notebookPath ? "Saved to notebook artifacts" : "Saved to Brain", {
+              description: path,
+            });
+            window.setTimeout(() => setSaved(false), 1400);
+          })
+          .catch((error) => {
+            console.error("Chat response save failed:", error);
+            toast.error("Could not save chat response");
+          })
+          .finally(() => setSaving(false));
+      }}
+      className={cn(
+        "shrink-0 rounded-md p-1.5 text-muted-foreground/60 opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100 disabled:cursor-wait disabled:opacity-70",
+        className
+      )}
+    >
+      {saving ? (
+        <Loader2Icon className="size-3.5 animate-spin" />
+      ) : saved ? (
+        <CheckIcon className="size-3.5" />
+      ) : (
+        <SaveIcon className="size-3.5" />
+      )}
+    </button>
   );
 };
 

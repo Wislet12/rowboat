@@ -89,6 +89,60 @@ const RowboatRealtimeVoiceFailureSchema = z.enum([
   'cancelled',
 ]);
 
+const NotebookRetrievalProfileSchema = z.enum(['fast', 'balanced', 'precise']);
+const NotebookSourceDescriptorSchema = z.object({
+  path: RelPath,
+  title: z.string(),
+  enabled: z.boolean(),
+  contextMode: z.enum(['off', 'overview', 'full']),
+  addedAt: z.string(),
+  sourceFilePath: RelPath.optional(),
+  format: z.string().optional(),
+  contentLength: z.number().int().nonnegative().optional(),
+  available: z.boolean(),
+  modifiedAt: z.number().nullable(),
+  size: z.number().int().nonnegative().nullable(),
+});
+const NotebookDescriptorSchema = z.object({
+  path: RelPath,
+  version: z.literal(1),
+  title: z.string(),
+  description: z.string(),
+  retrievalProfile: NotebookRetrievalProfileSchema,
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  sources: z.array(NotebookSourceDescriptorSchema),
+});
+const NotebookContextSnapshotSchema = z.object({
+  kind: z.literal('notebook'),
+  path: RelPath,
+  contextId: z.string(),
+  title: z.string(),
+  description: z.string(),
+  retrievalProfile: NotebookRetrievalProfileSchema,
+  query: z.string().optional(),
+  sources: z.array(z.object({
+    id: z.string(),
+    path: RelPath,
+    title: z.string(),
+    content: z.string(),
+    truncated: z.boolean(),
+    contextMode: z.enum(['overview', 'full']),
+  })),
+  selectedSourceCount: z.number().int().nonnegative(),
+  unavailableSources: z.array(z.object({
+    path: RelPath,
+    title: z.string(),
+  })),
+  retrievalEvidence: z.object({
+    queryTermCount: z.number().int().nonnegative(),
+    candidateChunkCount: z.number().int().nonnegative(),
+    selectedChunkCount: z.number().int().nonnegative(),
+    readableSourceCount: z.number().int().nonnegative(),
+  }),
+  capturedAt: z.string(),
+});
+
 const RowboatRealtimeVoiceIdentitySchema = z.object({
   provider: z.literal('gpt-realtime-2.1'),
   authMode: z.literal('chatgpt_oauth'),
@@ -2112,37 +2166,24 @@ const ipcSchemas = {
   },
   'knowledge:notebooks:create': {
     req: z.object({ title: z.string().min(1).max(120) }),
-    res: z.object({
-      path: RelPath,
-      version: z.literal(1),
-      title: z.string(),
-      createdAt: z.string(),
-      updatedAt: z.string(),
-      sources: z.array(z.object({
-        path: RelPath,
-        title: z.string(),
-        enabled: z.boolean(),
-        contextMode: z.enum(['off', 'overview', 'full']),
-        addedAt: z.string(),
-      })),
-    }),
+    res: NotebookDescriptorSchema,
   },
   'knowledge:notebooks:get': {
     req: z.object({ path: RelPath }),
-    res: z.object({
+    res: NotebookDescriptorSchema,
+  },
+  'knowledge:notebooks:update': {
+    req: z.object({
       path: RelPath,
-      version: z.literal(1),
-      title: z.string(),
-      createdAt: z.string(),
-      updatedAt: z.string(),
-      sources: z.array(z.object({
-        path: RelPath,
-        title: z.string(),
-        enabled: z.boolean(),
-        contextMode: z.enum(['off', 'overview', 'full']),
-        addedAt: z.string(),
-      })),
+      title: z.string().min(1).max(120).optional(),
+      description: z.string().max(2_000).optional(),
+      retrievalProfile: NotebookRetrievalProfileSchema.optional(),
     }),
+    res: NotebookDescriptorSchema,
+  },
+  'knowledge:notebooks:delete': {
+    req: z.object({ path: RelPath }),
+    res: z.object({ ok: z.literal(true) }),
   },
   'knowledge:notebooks:setSourceEnabled': {
     req: z.object({
@@ -2150,20 +2191,7 @@ const ipcSchemas = {
       sourcePath: RelPath,
       enabled: z.boolean(),
     }),
-    res: z.object({
-      path: RelPath,
-      version: z.literal(1),
-      title: z.string(),
-      createdAt: z.string(),
-      updatedAt: z.string(),
-      sources: z.array(z.object({
-        path: RelPath,
-        title: z.string(),
-        enabled: z.boolean(),
-        contextMode: z.enum(['off', 'overview', 'full']),
-        addedAt: z.string(),
-      })),
-    }),
+    res: NotebookDescriptorSchema,
   },
   'knowledge:notebooks:setSourceContextMode': {
     req: z.object({
@@ -2171,47 +2199,34 @@ const ipcSchemas = {
       sourcePath: RelPath,
       contextMode: z.enum(['off', 'overview', 'full']),
     }),
-    res: z.object({
+    res: NotebookDescriptorSchema,
+  },
+  'knowledge:notebooks:updateSource': {
+    req: z.object({
       path: RelPath,
-      version: z.literal(1),
-      title: z.string(),
-      createdAt: z.string(),
-      updatedAt: z.string(),
-      sources: z.array(z.object({
-        path: RelPath,
-        title: z.string(),
-        enabled: z.boolean(),
-        contextMode: z.enum(['off', 'overview', 'full']),
-        addedAt: z.string(),
-      })),
+      sourcePath: RelPath,
+      title: z.string().min(1).max(160),
     }),
+    res: NotebookDescriptorSchema,
+  },
+  'knowledge:notebooks:removeSource': {
+    req: z.object({ path: RelPath, sourcePath: RelPath }),
+    res: NotebookDescriptorSchema,
   },
   'knowledge:notebooks:getContext': {
     req: z.object({
       path: RelPath,
       query: z.string().max(2_000).optional(),
     }),
-    res: z.object({
-      kind: z.literal('notebook'),
-      path: RelPath,
-      contextId: z.string(),
-      title: z.string(),
-      query: z.string().optional(),
-      sources: z.array(z.object({
-        id: z.string(),
-        path: RelPath,
-        title: z.string(),
-        content: z.string(),
-        truncated: z.boolean(),
-        contextMode: z.enum(['overview', 'full']),
-      })),
-      selectedSourceCount: z.number().int().nonnegative(),
-      unavailableSources: z.array(z.object({
-        path: RelPath,
-        title: z.string(),
-      })),
-      capturedAt: z.string(),
+    res: NotebookContextSnapshotSchema,
+  },
+  'knowledge:saveChatOutput': {
+    req: z.object({
+      markdown: z.string().min(1).max(1_000_000),
+      title: z.string().max(160).optional(),
+      notebookPath: RelPath.optional(),
     }),
+    res: z.object({ path: RelPath, title: z.string() }),
   },
   // Knowledge version history channels
   'knowledge:history': {

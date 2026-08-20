@@ -84,6 +84,8 @@ export const UserMessageContext = z.object({
             path: z.string(),
             contextId: z.string(),
             title: z.string(),
+            description: z.string().optional(),
+            retrievalProfile: z.enum(['fast', 'balanced', 'precise']).optional(),
             query: z.string().optional(),
             sources: z.array(z.object({
                 id: z.string(),
@@ -98,6 +100,12 @@ export const UserMessageContext = z.object({
                 path: z.string(),
                 title: z.string(),
             })),
+            retrievalEvidence: z.object({
+                queryTermCount: z.number().int().nonnegative(),
+                candidateChunkCount: z.number().int().nonnegative(),
+                selectedChunkCount: z.number().int().nonnegative(),
+                readableSourceCount: z.number().int().nonnegative(),
+            }).optional(),
             capturedAt: z.string().optional(),
         }),
         z.object({

@@ -133,11 +133,16 @@ import { importBrainNotes, IMPORT_NOTE_DIALOG_EXTENSIONS } from '@x/core/dist/kn
 import {
   buildNotebookContext,
   createNotebook,
+  deleteNotebook,
   findNotebookPath,
   getNotebook,
   importNotebookSources,
+  removeNotebookSource,
+  saveChatOutput,
   setNotebookSourceContextMode,
   setNotebookSourceEnabled,
+  updateNotebook,
+  updateNotebookSource,
 } from '@x/core/dist/knowledge/notebooks.js';
 import { versionHistory, voice } from '@x/core';
 import { classifySchedule, processRowboatInstruction } from '@x/core/dist/knowledge/inline_tasks.js';
@@ -556,8 +561,45 @@ function getVersions(): {
 // ============================================================================
 
 let watcher: FSWatcher | null = null;
+let watcherMutationTail: Promise<void> = Promise.resolve();
 const changeQueue = new Set<string>();
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Chokidar keeps directory handles open on Windows. A watched directory cannot
+ * always be moved to the workspace trash while those handles are active, so
+ * destructive workspace mutations briefly release and then restore the
+ * watcher. Serializing the pause prevents concurrent deletes from racing the
+ * watcher restart and keeps recoverable deletion reliable in packaged builds.
+ */
+async function withWorkspaceWatcherPaused<T>(operation: () => Promise<T>): Promise<T> {
+  const previousMutation = watcherMutationTail;
+  let releaseMutation!: () => void;
+  watcherMutationTail = new Promise<void>((resolve) => {
+    releaseMutation = resolve;
+  });
+
+  await previousMutation;
+  const activeWatcher = watcher;
+
+  try {
+    if (activeWatcher) {
+      watcher = null;
+      await activeWatcher.close();
+    }
+
+    return await operation();
+  } finally {
+    if (activeWatcher && !watcher) {
+      try {
+        await startWorkspaceWatcher();
+      } catch (error) {
+        console.error('[workspace] Failed to restart watcher after filesystem mutation:', error);
+      }
+    }
+    releaseMutation();
+  }
+}
 
 /**
  * Emit knowledge commit event to all renderer windows
@@ -1156,7 +1198,7 @@ export function setupIpcHandlers() {
       return workspace.copy(args.from, args.to, args.overwrite);
     },
     'workspace:remove': async (_event, args) => {
-      return workspace.remove(args.path, args.opts);
+      return withWorkspaceWatcherPaused(() => workspace.remove(args.path, args.opts));
     },
     'gmail:getImportant': async (_event, args) => {
       return listImportantThreads({ cursor: args.cursor, limit: args.limit });
@@ -2302,6 +2344,16 @@ export function setupIpcHandlers() {
     'knowledge:notebooks:get': async (_event, args) => {
       return getNotebook(args.path);
     },
+    'knowledge:notebooks:update': async (_event, args) => {
+      const notebook = await updateNotebook(args.path, args);
+      invalidateKnowledgeIndex();
+      return notebook;
+    },
+    'knowledge:notebooks:delete': async (_event, args) => {
+      const result = await withWorkspaceWatcherPaused(() => deleteNotebook(args.path));
+      invalidateKnowledgeIndex();
+      return result;
+    },
     'knowledge:notebooks:setSourceEnabled': async (_event, args) => {
       const notebook = await setNotebookSourceEnabled(args.path, args.sourcePath, args.enabled);
       invalidateKnowledgeIndex();
@@ -2312,11 +2364,26 @@ export function setupIpcHandlers() {
       invalidateKnowledgeIndex();
       return notebook;
     },
+    'knowledge:notebooks:updateSource': async (_event, args) => {
+      const notebook = await updateNotebookSource(args.path, args.sourcePath, { title: args.title });
+      invalidateKnowledgeIndex();
+      return notebook;
+    },
+    'knowledge:notebooks:removeSource': async (_event, args) => {
+      const notebook = await removeNotebookSource(args.path, args.sourcePath);
+      invalidateKnowledgeIndex();
+      return notebook;
+    },
     'knowledge:notebooks:getContext': async (_event, args) => {
       // Every request re-opens the manifest and every enabled source through
       // the canonical workspace boundary. Deleted or newly inaccessible
       // sources therefore disappear from chat and voice context immediately.
       return buildNotebookContext(args.path, args.query);
+    },
+    'knowledge:saveChatOutput': async (_event, args) => {
+      const saved = await saveChatOutput(args);
+      invalidateKnowledgeIndex();
+      return saved;
     },
     // Knowledge version history handlers
     'knowledge:history': async (_event, args) => {
