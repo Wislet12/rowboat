@@ -98,4 +98,12 @@ describe("composeSystemInstructions golden bytes", () => {
             last = at;
         }
     });
+
+    it("keeps note and notebook context isolated without narrowing agentic capabilities", () => {
+        const composed = composeSystemInstructions(input());
+        expect(composed).toContain("selected-source excerpts are the only active notebook evidence");
+        expect(composed).toContain("Discard source data from every earlier notebook snapshot");
+        expect(composed).toContain("context, not a capability restriction");
+        expect(composed).toContain("Every normal Rowboat skill, tool, MCP server, connected app");
+    });
 });

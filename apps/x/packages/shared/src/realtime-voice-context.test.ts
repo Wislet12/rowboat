@@ -1,8 +1,56 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildRowboatRealtimeInstructions } from './realtime-voice-context.js'
+import {
+  buildRowboatRealtimeInstructions,
+  getRowboatRealtimeContextIdentity,
+  shouldRotateRowboatRealtimeDelegationSession,
+} from './realtime-voice-context.js'
 
 describe('Realtime voice replacement context', () => {
+  it('keeps refreshes in one context identity and separates note, notebook, tab, and empty contexts', () => {
+    expect(getRowboatRealtimeContextIdentity({
+      kind: 'note',
+      path: 'knowledge\\Meetings\\Alpha.md',
+      contextId: 'alpha@1',
+      title: 'Alpha',
+      noteType: 'meeting',
+      metadata: {},
+      content: 'first capture',
+    })).toBe('note:knowledge/Meetings/Alpha.md')
+    expect(getRowboatRealtimeContextIdentity({
+      kind: 'note',
+      path: 'knowledge/Meetings/Alpha.md',
+      contextId: 'alpha@2',
+      title: 'Alpha renamed in memory',
+      noteType: 'meeting',
+      metadata: {},
+      content: 'second capture',
+    })).toBe('note:knowledge/Meetings/Alpha.md')
+    expect(getRowboatRealtimeContextIdentity({
+      kind: 'notebook',
+      path: 'knowledge/Brain/Notebooks/Study',
+      contextId: 'study@9',
+      title: 'Study',
+      query: 'new query',
+      sources: [],
+      selectedSourceCount: 0,
+      unavailableSources: [],
+    })).toBe('notebook:knowledge/Brain/Notebooks/Study')
+    expect(getRowboatRealtimeContextIdentity({
+      kind: 'browser',
+      url: 'https://example.test/changed-route',
+      title: 'Current tab',
+      tabId: 'tab-7',
+      snapshotId: 'new-snapshot-every-turn',
+      untrusted: true,
+    })).toBe('browser:tab-7')
+    expect(getRowboatRealtimeContextIdentity({ kind: 'empty' })).toBe('empty')
+    expect(shouldRotateRowboatRealtimeDelegationSession(null, 'note:alpha')).toBe(false)
+    expect(shouldRotateRowboatRealtimeDelegationSession('note:alpha', 'note:alpha')).toBe(false)
+    expect(shouldRotateRowboatRealtimeDelegationSession('note:alpha', 'note:beta')).toBe(true)
+    expect(shouldRotateRowboatRealtimeDelegationSession('note:beta', 'empty')).toBe(true)
+  })
+
   it('builds one active meeting-note snapshot and replaces the prior identity', () => {
     const first = buildRowboatRealtimeInstructions({
       kind: 'note',
@@ -33,6 +81,28 @@ describe('Realtime voice replacement context', () => {
     const instructions = buildRowboatRealtimeInstructions({ kind: 'empty' })
     expect(instructions).toContain('No note or browser page is currently available')
     expect(instructions).toContain('Discard every earlier note or page snapshot')
+    expect(instructions).toContain('every Rowboat skill, builtin tool, MCP server')
+    expect(instructions).toContain('live skill catalog')
+  })
+
+  it('delegates OCR for an imported document whose stored extraction is insufficient', () => {
+    const instructions = buildRowboatRealtimeInstructions({
+      kind: 'note',
+      path: 'knowledge/Brain/Imports/_sources/scan.pdf',
+      contextId: 'knowledge/Brain/Imports/_sources/scan.pdf',
+      title: 'Scan',
+      noteType: 'brain',
+      metadata: {
+        context_extraction_status: 'needs-ocr',
+        original_source_path: 'knowledge/Brain/Imports/_sources/scan.pdf',
+      },
+      content: '-- 1 of 1 --',
+    })
+
+    expect(instructions).toContain('Call rowboat_delegate exactly once')
+    expect(instructions).toContain('LLMParse')
+    expect(instructions).toContain('knowledge/Brain/Imports/_sources/scan.pdf')
+    expect(instructions).toContain('Do not call the document unreadable')
   })
 
   it('grounds a live notebook conversation and replaces its sources', () => {

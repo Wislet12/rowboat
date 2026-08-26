@@ -26,7 +26,11 @@ function formatUserMessageContextForLlm(
             const metadata = note.metadata && Object.keys(note.metadata).length > 0
                 ? `\nMetadata:\n\`\`\`json\n${JSON.stringify(note.metadata, null, 2)}\n\`\`\``
                 : '';
-            sections.push(`Active note context (replacement snapshot):\nState: note\nContext ID: ${note.contextId ?? note.path}\nPath: ${note.path}\nTitle: ${note.title ?? note.path.split('/').pop() ?? note.path}\nType: ${note.noteType ?? 'brain'}${metadata}\n\nContent (including the note's existing notes and transcript when present):\n\`\`\`\n${note.content}\n\`\`\`\nThis snapshot is the only active note context. Ignore note snapshots from earlier turns unless the user explicitly asks to compare notes.`);
+            const extractionStatus = note.metadata?.context_extraction_status;
+            const extractionInstruction = extractionStatus === 'needs-ocr'
+                ? `\nThe imported document's stored extraction is only a page marker or placeholder. Before answering about its contents, call Rowboat's LLMParse tool on ${String(note.metadata?.original_source_path ?? note.path)}. Do not say the document is unreadable unless that tool also fails.`
+                : '';
+            sections.push(`Active note context (replacement snapshot):\nState: note\nContext ID: ${note.contextId ?? note.path}\nPath: ${note.path}\nTitle: ${note.title ?? note.path.split('/').pop() ?? note.path}\nType: ${note.noteType ?? 'brain'}${metadata}${extractionInstruction}\n\nContent (including the note's existing notes and transcript when present):\n\`\`\`\n${note.content}\n\`\`\`\nThis snapshot is the only active note context. Ignore note snapshots from earlier turns unless the user explicitly asks to compare notes.`);
         } else if (userMessageContext.middlePane.kind === 'notebook') {
             const notebook = userMessageContext.middlePane;
             const sourceIndex = notebook.sources

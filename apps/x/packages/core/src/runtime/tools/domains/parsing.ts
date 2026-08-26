@@ -5,7 +5,7 @@
 import { z } from "zod";
 import * as path from "path";
 import * as files from "../../../filesystem/files.js";
-import { generateText } from "ai";
+import { streamText } from "ai";
 import { createLanguageModel } from "../../../models/models.js";
 import { getDefaultModelAndProvider, resolveProviderConfig } from "../../../models/defaults.js";
 import { captureLlmUsage } from "../../../analytics/usage.js";
@@ -26,8 +26,10 @@ import { BuiltinToolsSchema } from "../types.js";
 // self-contained main-process bundle. A variable `import(moduleName)` works in
 // source/tests but leaves a bare runtime package lookup in the packaged app.
 const loadPdfParser = () => import('pdf-parse');
+const loadPdfRenderer = () => import('pdfjs-dist/legacy/build/pdf.mjs');
 const loadPdfWorker = () => import('pdfjs-dist/legacy/build/pdf.worker.mjs');
 const loadDomMatrix = () => import('@thednp/dommatrix');
+const loadCanvas = () => import('@napi-rs/canvas');
 const loadSpreadsheetParser = () => import('xlsx');
 const loadCsvParser = () => import('papaparse');
 const loadWordParser = () => import('mammoth');
@@ -101,6 +103,72 @@ export type ParsedFileResult = {
     data?: unknown;
     usage?: unknown;
 };
+
+export type RenderedPdfPages = {
+    pages: Array<{ pageNumber: number; base64: string }>;
+    totalPages: number;
+    truncated: boolean;
+};
+
+const MAX_LLM_PDF_PAGES = 12;
+
+/**
+ * Render scanned/image-only PDF pages to PNG without a browser window. This is
+ * the local half of LLMParse's OCR fallback: the configured model receives
+ * page images only after the normal PDF attachment path produces no content.
+ */
+export async function renderPdfPagesForLlm(
+    buffer: Buffer,
+    requestedPages?: number[],
+): Promise<RenderedPdfPages> {
+    const { createCanvas, DOMMatrix, ImageData, Path2D } = await loadCanvas();
+    const runtimeGlobals = globalThis as unknown as Record<string, unknown>;
+    runtimeGlobals.DOMMatrix = DOMMatrix;
+    runtimeGlobals.ImageData ||= ImageData;
+    runtimeGlobals.Path2D ||= Path2D;
+    const [pdfjs] = await Promise.all([
+        loadPdfRenderer(),
+        loadPdfWorker(),
+    ]);
+
+    const document = await pdfjs.getDocument({
+        data: new Uint8Array(buffer),
+        disableWorker: true,
+    } as Parameters<typeof pdfjs.getDocument>[0]).promise;
+    try {
+        const normalizedRequestedPages = requestedPages
+            ? Array.from(new Set(requestedPages.filter((page) => Number.isInteger(page) && page >= 1 && page <= document.numPages)))
+            : [];
+        const selectedPages = (normalizedRequestedPages.length > 0
+            ? normalizedRequestedPages
+            : Array.from({ length: Math.min(document.numPages, MAX_LLM_PDF_PAGES) }, (_, index) => index + 1))
+            .slice(0, MAX_LLM_PDF_PAGES);
+        const pages: RenderedPdfPages['pages'] = [];
+
+        for (const pageNumber of selectedPages) {
+            const page = await document.getPage(pageNumber);
+            const naturalViewport = page.getViewport({ scale: 1 });
+            const scale = Math.max(0.75, Math.min(2, 1600 / naturalViewport.width));
+            const viewport = page.getViewport({ scale });
+            const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
+            const canvasContext = canvas.getContext('2d');
+            await page.render({
+                canvasContext: canvasContext as unknown as CanvasRenderingContext2D,
+                viewport,
+            } as unknown as Parameters<typeof page.render>[0]).promise;
+            pages.push({ pageNumber, base64: canvas.toBuffer('image/png').toString('base64') });
+            page.cleanup();
+        }
+
+        return {
+            pages,
+            totalPages: document.numPages,
+            truncated: selectedPages.length < document.numPages,
+        };
+    } finally {
+        await document.destroy();
+    }
+}
 
 export async function parseFileLocally(filePath: string): Promise<ParsedFileResult> {
     try {
@@ -242,7 +310,11 @@ export async function parseFileLocally(filePath: string): Promise<ParsedFileResu
     }
 }
 
-export async function parseFileWithLlm(filePath: string, prompt?: string): Promise<ParsedFileResult> {
+export async function parseFileWithLlm(
+    filePath: string,
+    prompt?: string,
+    requestedPages?: number[],
+): Promise<ParsedFileResult> {
     try {
         const fileName = path.basename(filePath);
         const ext = path.extname(filePath).toLowerCase();
@@ -263,38 +335,108 @@ export async function parseFileWithLlm(filePath: string, prompt?: string): Promi
         const userPrompt = prompt || 'Convert this file to well-structured markdown.';
 
         const ctx = getCurrentUseCase();
-        const response = await withUseCase({
-            useCase: ctx?.useCase ?? 'copilot_chat',
-            subUseCase: 'file_parse',
-            ...(ctx?.agentName ? { agentName: ctx.agentName } : {}),
-        }, () => generateText({
-            model,
-            messages: [
-                {
-                    role: 'user',
-                    content: [
-                        { type: 'text', text: userPrompt },
-                        { type: 'file', data: base64, mediaType: mimeType },
-                    ],
-                },
-            ],
-        }));
+        const generate = async (
+            content: Array<{ type: 'text'; text: string } | { type: 'file'; data: string; mediaType: string }>,
+            subUseCase: 'file_parse' | 'file_parse_rendered_pdf',
+        ) => {
+            const response = await withUseCase({
+                useCase: ctx?.useCase ?? 'copilot_chat',
+                subUseCase,
+                ...(ctx?.agentName ? { agentName: ctx.agentName } : {}),
+            }, async () => {
+                // Codex OAuth's Responses endpoint requires a real stream.
+                // streamText keeps that native path intact; generateText has
+                // to force and then re-aggregate SSE, which can yield a valid
+                // reasoning item but lose the final multimodal text output.
+                const streamed = streamText({ model, messages: [{ role: 'user', content }] });
+                let text = '';
+                for await (const delta of streamed.textStream) text += delta;
+                return { text, usage: await streamed.usage };
+            });
+            captureLlmUsage({
+                useCase: ctx?.useCase ?? 'copilot_chat',
+                subUseCase,
+                ...(ctx?.agentName ? { agentName: ctx.agentName } : {}),
+                model: modelId,
+                provider: providerName,
+                usage: response.usage,
+            });
+            return response;
+        };
 
-        captureLlmUsage({
-            useCase: ctx?.useCase ?? 'copilot_chat',
-            subUseCase: 'file_parse',
-            ...(ctx?.agentName ? { agentName: ctx.agentName } : {}),
-            model: modelId,
-            provider: providerName,
-            usage: response.usage,
-        });
+        const response = await generate([
+            { type: 'text', text: userPrompt },
+            { type: 'file', data: base64, mediaType: mimeType },
+        ], 'file_parse');
+
+        if (response.text.trim()) {
+            return {
+                success: true,
+                fileName,
+                format: ext.slice(1),
+                mimeType,
+                content: response.text,
+                usage: response.usage,
+            };
+        }
+
+        // Some multimodal providers accept a PDF attachment but return a
+        // reasoning-only, empty final response for image-only pages. Treating
+        // that as success makes chat and voice incorrectly declare the note
+        // unreadable. Render those pages locally and retry them as PNGs, the
+        // same image input contract used by pasted screenshots.
+        if (ext === '.pdf') {
+            const rendered = await renderPdfPagesForLlm(buffer, requestedPages);
+            if (rendered.pages.length === 0) {
+                return { success: false, error: 'The PDF contains no renderable pages.' };
+            }
+            const renderedContent: Array<{ type: 'text'; text: string } | { type: 'file'; data: string; mediaType: string }> = [{
+                type: 'text',
+                text: [
+                    userPrompt,
+                    '',
+                    'The PDF attachment returned no readable text. Analyze the rendered page images below with OCR/vision.',
+                    'Preserve exact facts and page numbers. Do not claim the source is unreadable while visible text is present.',
+                ].join('\n'),
+            }];
+            for (const page of rendered.pages) {
+                renderedContent.push({ type: 'text', text: `PDF page ${page.pageNumber} of ${rendered.totalPages}:` });
+                renderedContent.push({ type: 'file', data: page.base64, mediaType: 'image/png' });
+            }
+            const visualResponse = await generate(renderedContent, 'file_parse_rendered_pdf');
+            if (!visualResponse.text.trim()) {
+                return {
+                    success: false,
+                    error: 'The configured model returned no text for either the PDF attachment or its rendered page images.',
+                    metadata: {
+                        extractionMethod: 'rendered-pages',
+                        renderedPages: rendered.pages.map((page) => page.pageNumber),
+                        totalPages: rendered.totalPages,
+                    },
+                };
+            }
+            return {
+                success: true,
+                fileName,
+                format: 'pdf',
+                mimeType,
+                content: visualResponse.text,
+                usage: visualResponse.usage,
+                metadata: {
+                    extractionMethod: 'rendered-pages',
+                    renderedPages: rendered.pages.map((page) => page.pageNumber),
+                    totalPages: rendered.totalPages,
+                    truncated: rendered.truncated,
+                    ...(rendered.truncated
+                        ? { nextStep: `Call LLMParse again with the remaining page numbers (maximum ${MAX_LLM_PDF_PAGES} per call).` }
+                        : {}),
+                },
+            };
+        }
 
         return {
-            success: true,
-            fileName,
-            format: ext.slice(1),
-            mimeType,
-            content: response.text,
+            success: false,
+            error: 'The configured model returned an empty response for this file.',
             usage: response.usage,
         };
     } catch (error) {
@@ -325,9 +467,10 @@ export const parsingTools: z.infer<typeof BuiltinToolsSchema> = {
         inputSchema: z.object({
             path: z.string().min(1).describe('File path to parse. Can be absolute, ~/..., or relative to the default root.'),
             prompt: z.string().optional().describe('Custom instruction for the LLM (defaults to "Convert this file to well-structured markdown.")'),
+            pages: z.array(z.number().int().min(1)).max(MAX_LLM_PDF_PAGES).optional().describe(`Optional 1-indexed PDF pages to render with OCR/vision when the direct PDF response is empty (maximum ${MAX_LLM_PDF_PAGES}).`),
         }),
-        execute: async ({ path: filePath, prompt }: { path: string; prompt?: string }) => {
-            return parseFileWithLlm(filePath, prompt);
+        execute: async ({ path: filePath, prompt, pages }: { path: string; prompt?: string; pages?: number[] }) => {
+            return parseFileWithLlm(filePath, prompt, pages);
         },
     },
 };

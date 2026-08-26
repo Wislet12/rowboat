@@ -95,6 +95,8 @@ describe('RowboatRealtimeVoiceBroker', () => {
     expect(admissionBody.session.instructions).toMatch(/warm, clearly masculine[\s\S]*lower-register voice/i);
     expect(admissionBody.session.instructions).toMatch(/CURRENT LIVE CONTEXT[\s\S]*never reuse an older snapshot/i);
     expect(admissionBody.session.instructions).toMatch(/search or open other meeting or Brain notes/i);
+    expect(admissionBody.session.instructions).toMatch(/every Rowboat skill, builtin tool, MCP server/i);
+    expect(admissionBody.session.tools[0].description).toMatch(/live skill catalog[\s\S]*full builtin toolset/i);
     expect(admissionBody.session.instructions).not.toMatch(/speech transport|say exact text|never answer user audio/i);
     expect(JSON.stringify(admissionBody)).not.toMatch(/jarvis|pocket|gemini|api[_ -]?key/i);
     expect(fetchImpl.mock.calls[1]?.[0]).toBe('https://api.openai.com/v1/realtime/calls');

@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
     buildImportedNoteMarkdown,
     getImportStrategy,
+    hasMeaningfulImportedContent,
     normalizeBrainImportFolder,
+    parseImportedSourceNote,
 } from './import_notes.js';
 
 describe('Brain note imports', () => {
@@ -50,5 +52,38 @@ describe('Brain note imports', () => {
         expect(markdown).toContain('extraction: "local-parser"');
         expect(markdown).toContain('# Care Plan');
         expect(markdown).toContain('- Follow up Friday');
+    });
+
+    it('resolves an imported source to its editable extracted-note context', () => {
+        const markdown = buildImportedNoteMarkdown({
+            title: 'Lecture 7',
+            body: '## Renal review\n\n- Know the nephron flow',
+            importedAt: '2026-08-26T12:00:00.000Z',
+            sourceName: 'lecture-7.pdf',
+            sourcePath: 'knowledge/Brain/Imports/_sources/lecture-7.pdf',
+            sourceFormat: 'pdf',
+            sourceHash: 'def456',
+            extraction: 'local-parser',
+        });
+
+        const context = parseImportedSourceNote('knowledge/Brain/Imports/Lecture 7.md', markdown);
+        expect(context).toMatchObject({
+            sourcePath: 'knowledge/Brain/Imports/_sources/lecture-7.pdf',
+            notePath: 'knowledge/Brain/Imports/Lecture 7.md',
+            title: 'Lecture 7',
+            contentReadable: true,
+        });
+        expect(context?.content).toContain('Know the nephron flow');
+        expect(context?.metadata.source_format).toBe('"pdf"');
+    });
+
+    it('does not treat ordinary Markdown as imported-source context', () => {
+        expect(parseImportedSourceNote('knowledge/Brain/freeform.md', '# Freeform')).toBeNull();
+    });
+
+    it('rejects page markers and placeholders as readable imported content', () => {
+        expect(hasMeaningfulImportedContent('-- 1 of 1 --')).toBe(false);
+        expect(hasMeaningfulImportedContent('_No extractable text was found in this file._')).toBe(false);
+        expect(hasMeaningfulImportedContent('## Dose\n\n5 mg daily')).toBe(true);
     });
 });

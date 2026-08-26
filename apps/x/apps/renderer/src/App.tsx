@@ -1,7 +1,11 @@
 import * as React from 'react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState, useRef } from 'react'
 import { workspace } from '@x/shared';
-import type { RowboatRealtimeContextSnapshot } from '@x/shared/src/realtime-voice-context.js';
+import {
+  getRowboatRealtimeContextIdentity,
+  shouldRotateRowboatRealtimeDelegationSession,
+  type RowboatRealtimeContextSnapshot,
+} from '@x/shared/src/realtime-voice-context.js';
 import { RunEvent } from '@x/shared/src/runs.js';
 import type { ToolUIPart } from 'ai';
 import './App.css'
@@ -237,6 +241,27 @@ function toSpeakableText(markdown: string): string {
   const cut = text.slice(0, 700)
   const lastStop = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? '))
   return lastStop > 200 ? cut.slice(0, lastStop + 1) : cut
+}
+
+function importedContextHasReadableContent(value: string): boolean {
+  const substantive = value
+    .replace(/^\s*--\s*\d+\s+of\s+\d+\s*--\s*$/gim, '')
+    .replace(/_No extractable text was found in this file\._/gi, '')
+    .replace(/[#*_`>\-\s]/g, '')
+  return /[\p{L}\p{N}]{2,}/u.test(substantive)
+}
+
+function decodedFrontmatterScalar(value: string | string[] | undefined): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  if (!trimmed.startsWith('"')) return trimmed
+  try {
+    const parsed = JSON.parse(trimmed)
+    return typeof parsed === 'string' ? parsed : null
+  } catch {
+    return null
+  }
 }
 
 function mergeRealtimeVoiceTranscript(
@@ -1156,6 +1181,7 @@ function App() {
   const realtimeContextProviderRef = useRef<((query?: string) => Promise<RowboatRealtimeContextSnapshot | null>) | null>(null)
   const realtimeBargeInRef = useRef<(() => void) | null>(null)
   const realtimeDelegationSessionRef = useRef<string | null>(null)
+  const realtimeDelegationContextIdentityRef = useRef<string | null>(null)
   const foregroundDelegationRef = useRef<{ callId: string; turnId: string | null } | null>(null)
   const appendRealtimeTranscript = useCallback((role: 'user' | 'assistant', id: string, text: string) => {
     const content = text.trim()
@@ -1507,6 +1533,7 @@ function App() {
     rowboatRealtimeVoiceRef.current.cancelSpeech()
     ttsRef.current.cancel()
     realtimeDelegationSessionRef.current = null
+    realtimeDelegationContextIdentityRef.current = null
     ttsEnabledRef.current = false
     ttsModeRef.current = 'summary'
     callTurnMarksRef.current = null
@@ -1522,6 +1549,8 @@ function App() {
 
   const startCall = useCallback(async (preset: CallPreset) => {
     if (inCallRef.current) return
+    realtimeDelegationSessionRef.current = null
+    realtimeDelegationContextIdentityRef.current = null
     const camera = preset === 'video' || preset === 'practice'
     // A manual push-to-talk recording can't coexist with the call's mic.
     if (isRecordingRef.current) {
@@ -3698,9 +3727,6 @@ function App() {
         untrusted: true
       }
   const buildMiddlePaneContext = async (query?: string): Promise<MiddlePaneContextPayload | undefined> => {
-    // Nothing visible in the middle pane when the right pane is maximized.
-    if (isRightPaneMaximized) return undefined
-
     // Browser is an overlay on top of any note — when it's open, it's what the user is looking at.
     if (isBrowserOpen) {
       try {
@@ -3755,10 +3781,35 @@ function App() {
       }
     }
 
-    // Note case: only markdown files are meaningfully readable as context.
+    // Note case: Markdown is read directly. Original PDF, Office, image, and
+    // other imported source files resolve to their editable extracted-note
+    // companion, so opening either surface gives chat and voice the same
+    // authoritative content without reparsing the binary on every turn.
     const path = selectedPathRef.current
-    if (!path || !path.endsWith('.md')) return undefined
+    if (!path) return undefined
     try {
+      const normalizedPath = path.replace(/\\/g, '/')
+      if (!normalizedPath.toLowerCase().endsWith('.md')) {
+        const imported = await window.ipc.invoke('knowledge:getImportedSourceContext', {
+          path: normalizedPath,
+        })
+        if (!imported) return undefined
+        return {
+          kind: 'note',
+          path: normalizedPath,
+          content: imported.content,
+          contextId: normalizedPath,
+          title: imported.title,
+          noteType: imported.notePath.startsWith('knowledge/Meetings/') ? 'meeting' : 'brain',
+          metadata: {
+            ...imported.metadata,
+            context_source: 'imported-document',
+            context_extraction_status: imported.contentReadable ? 'ready' : 'needs-ocr',
+            extracted_note_path: imported.notePath,
+            original_source_path: imported.sourcePath,
+          },
+        }
+      }
       // workspace:readFile is the canonical permission/sandbox gate. Re-run it
       // for every chat/voice turn so revoked notes immediately stop entering
       // context. The editor body is then used to include unsaved local edits.
@@ -3767,8 +3818,15 @@ function App() {
       const content = editorPathRef.current === path
         ? (editorContentRef.current ?? persistedBody)
         : persistedBody
-      const normalizedPath = path.replace(/\\/g, '/')
       const name = normalizedPath.split('/').pop() ?? normalizedPath
+      const metadata = extractAllFrontmatterValues(raw)
+      const importedSourcePath = decodedFrontmatterScalar(metadata.source_file)
+      if (importedSourcePath) {
+        metadata.context_source = 'imported-document'
+        metadata.context_extraction_status = importedContextHasReadableContent(content) ? 'ready' : 'needs-ocr'
+        metadata.extracted_note_path = normalizedPath
+        metadata.original_source_path = importedSourcePath.replace(/\\/g, '/')
+      }
       return {
         kind: 'note',
         path: normalizedPath,
@@ -3776,7 +3834,7 @@ function App() {
         contextId: normalizedPath,
         title: name.replace(/\.md$/i, ''),
         noteType: normalizedPath.startsWith('knowledge/Meetings/') ? 'meeting' : 'brain',
-        metadata: extractAllFrontmatterValues(raw),
+        metadata,
       }
     } catch (error) {
       console.warn('[active-note-context] Current note is no longer readable; omitting it', path, error)
@@ -3798,7 +3856,7 @@ function App() {
   useEffect(() => {
     if (!rowboatRealtimeVoiceRef.current.active) return
     void rowboatRealtimeVoiceRef.current.refreshContext()
-  }, [selectedPath, activeNotebookPath, isBrowserOpen, isRightPaneMaximized, debouncedContent])
+  }, [selectedPath, activeNotebookPath, isBrowserOpen, debouncedContent])
 
   const handlePromptSubmit = async (
     message: PromptInputMessage,
@@ -4101,7 +4159,21 @@ function App() {
 
   realtimeDelegateRef.current = async ({ callId, request, signal }) => {
     const submitTabId = activeChatTabIdRef.current
+    const middlePane = await buildMiddlePaneContext(request)
+    const contextIdentity = getRowboatRealtimeContextIdentity(middlePane ?? { kind: 'empty' })
     let delegationSessionId = realtimeDelegationSessionRef.current
+
+    // A Realtime provider context update replaces the direct spoken snapshot,
+    // but delegated tool work also has durable agent history. Rotate that
+    // agent session at the logical note/notebook/tab boundary so a previous
+    // note's user and assistant turns cannot influence work for the new note.
+    if (shouldRotateRowboatRealtimeDelegationSession(
+      realtimeDelegationContextIdentityRef.current,
+      contextIdentity,
+    )) {
+      realtimeDelegationSessionRef.current = null
+      delegationSessionId = null
+    }
 
     // Reuse the visible chat when it is idle so permissions, tools, and durable
     // results remain in the user's current Rowboat conversation. If that chat
@@ -4130,6 +4202,7 @@ function App() {
         }
       }
       realtimeDelegationSessionRef.current = delegationSessionId
+      realtimeDelegationContextIdentityRef.current = contextIdentity
     }
 
     const selected = selectedModelByTabRef.current.get(submitTabId)
@@ -4138,7 +4211,6 @@ function App() {
       .invoke('turnLimits:getSettings', null)
       .then((settings) => settings.chatMaxModelCalls)
       .catch(() => undefined)
-    const middlePane = await buildMiddlePaneContext(request)
     const videoFrames = inCallRef.current ? video.collectFrames() : []
     const messageContent = videoFrames.length > 0
       ? [

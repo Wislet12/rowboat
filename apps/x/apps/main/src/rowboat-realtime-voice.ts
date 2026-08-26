@@ -167,7 +167,9 @@ function sessionConfig() {
         description:
           'Delegate work to Rowboat’s existing Codex-authorized agent and tool runtime. '
           + 'Use this to search or open meeting/Brain notes, for connected apps, files, code execution, '
-          + 'web research beyond the supplied current page, or any request that requires tools or a durable action. '
+          + 'web research beyond the supplied current page, skills, MCP servers, sub-agents, or any request that '
+          + 'requires tools or a durable action. The delegated agent can inspect Rowboat’s live skill catalog and '
+          + 'load its full builtin toolset, so current note context never narrows available capabilities. '
           + 'Do not use it for ordinary conversation grounded in the supplied current snapshot.',
         parameters: {
           type: 'object',

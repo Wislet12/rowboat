@@ -36,7 +36,7 @@ await esbuild.build({
   // electron-liquid-glass is staged below on macOS (its only platform);
   // elsewhere the quick-ask bar's lazy import fails and it keeps the solid
   // capsule.
-  external: ['electron', 'node-pty', 'uiohook-napi', 'electron-liquid-glass'],
+  external: ['electron', 'node-pty', 'uiohook-napi', 'electron-liquid-glass', '@napi-rs/canvas'],
   // Use CommonJS format - many dependencies use require() which doesn't work
   // well with esbuild's ESM shim. CJS handles dynamic requires natively.
   format: 'cjs',
@@ -145,6 +145,26 @@ const nodeGypBuildDest = path.join(here, '.package', 'node_modules', 'node-gyp-b
 fs.rmSync(nodeGypBuildDest, { recursive: true, force: true });
 fs.cpSync(nodeGypBuildSrc, nodeGypBuildDest, { recursive: true, dereference: true });
 console.log('✅ uiohook-napi staged in .package/node_modules');
+
+// PDF OCR fallback renders image-only pages locally before sending PNGs to the
+// configured multimodal model. @napi-rs/canvas is native N-API, so stage its
+// JavaScript loader and only the current host's optional binary package.
+const canvasPackageLink = [
+  path.join(here, 'node_modules', '@napi-rs', 'canvas'),
+  path.join(here, '..', '..', 'packages', 'core', 'node_modules', '@napi-rs', 'canvas'),
+].find((candidate) => fs.existsSync(candidate));
+if (!canvasPackageLink) throw new Error('Could not resolve @napi-rs/canvas for PDF OCR packaging.');
+const canvasScopeSrc = path.dirname(fs.realpathSync(canvasPackageLink));
+const canvasScopeDest = path.join(here, '.package', 'node_modules', '@napi-rs');
+fs.mkdirSync(canvasScopeDest, { recursive: true });
+for (const packageDirectory of fs.readdirSync(canvasScopeSrc)) {
+  if (packageDirectory !== 'canvas' && !packageDirectory.startsWith(`canvas-${process.platform}`)) continue;
+  const source = fs.realpathSync(path.join(canvasScopeSrc, packageDirectory));
+  const destination = path.join(canvasScopeDest, packageDirectory);
+  fs.rmSync(destination, { recursive: true, force: true });
+  fs.cpSync(source, destination, { recursive: true, dereference: true });
+}
+console.log(`✅ @napi-rs/canvas staged for ${process.platform}-${process.arch}`);
 
 // electron-liquid-glass (quick-ask bar's glass material): same node-gyp-build
 // loader + prebuilds layout as uiohook-napi. macOS-only prebuilds — on other

@@ -59,6 +59,35 @@ export type RowboatRealtimeContextSnapshot =
       untrusted: true
     }
 
+/**
+ * Stable identity for the logical context behind a live snapshot.
+ *
+ * Snapshot IDs, retrieval queries, and capture timestamps intentionally do
+ * not participate: those change on every refresh. The identity changes only
+ * when the user changes the active note, notebook, browser tab, or closes the
+ * contextual surface. Voice delegation uses this boundary to keep one note's
+ * agent history out of the next note's session.
+ */
+export function getRowboatRealtimeContextIdentity(
+  context: RowboatRealtimeContextSnapshot | null | undefined,
+): string {
+  if (!context || context.kind === 'empty') return 'empty'
+  if (context.kind === 'note') {
+    return `note:${context.path.replace(/\\/g, '/')}`
+  }
+  if (context.kind === 'notebook') {
+    return `notebook:${context.path.replace(/\\/g, '/')}`
+  }
+  return `browser:${context.tabId || context.url}`
+}
+
+export function shouldRotateRowboatRealtimeDelegationSession(
+  previousIdentity: string | null,
+  nextIdentity: string,
+): boolean {
+  return previousIdentity !== null && previousIdentity !== nextIdentity
+}
+
 export const ROWBOAT_REALTIME_BASE_INSTRUCTIONS =
   'You are Rowboat’s live conversational voice inside the Rowboat application. '
   + 'Have a natural, concise, spoken conversation and respond directly to greetings, '
@@ -72,6 +101,9 @@ export const ROWBOAT_REALTIME_BASE_INSTRUCTIONS =
   + 'When the user asks to search or open other meeting or Brain notes, notebooks, use connected apps, inspect or '
   + 'change files, run code, browse or research beyond the supplied current page, send or edit external '
   + 'data, or perform any durable action, call rowboat_delegate exactly once with the complete request. '
+  + 'The current context never limits Rowboat’s capabilities: every Rowboat skill, builtin tool, MCP server, '
+  + 'connected app, note search, and agentic workflow remains available through rowboat_delegate. If a tool '
+  + 'seems unavailable, delegate so Rowboat can inspect its live skill catalog before saying it cannot be done. '
   + 'Never claim an external action or tool result without that function. After it returns, explain the '
   + 'result naturally and briefly. Rowboat owns the tools and session; never mention bridges or internal routing.'
 
@@ -106,8 +138,13 @@ export function buildRowboatRealtimeInstructions(
 
   if (context.kind === 'note') {
     const metadata = metadataText(context.metadata)
+    const extractionNeedsOcr = context.metadata.context_extraction_status === 'needs-ocr'
+    const extractionInstruction = extractionNeedsOcr
+      ? `The stored extraction for this imported document is insufficient. Call rowboat_delegate exactly once and ask it to use LLMParse on ${bounded(context.metadata.original_source_path || context.path, 1_000)} before answering any question about the document. Do not call the document unreadable unless delegated extraction also fails.\n`
+      : ''
     return `${ROWBOAT_REALTIME_BASE_INSTRUCTIONS}\n\n# CURRENT LIVE CONTEXT — REPLACEMENT SNAPSHOT\n`
       + 'This is the only active note. Discard every earlier note or page snapshot. Re-check this identity before answering.\n'
+      + extractionInstruction
       + `Captured: ${capturedAt}\nContext ID: ${bounded(context.contextId, 1_000)}\n`
       + `Path: ${bounded(context.path, 1_000)}\nTitle: ${bounded(context.title, 500)}\n`
       + `Note type: ${context.noteType}\n`

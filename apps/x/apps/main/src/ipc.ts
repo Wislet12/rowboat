@@ -129,7 +129,11 @@ import { search } from '@x/core/dist/search/search.js';
 import { resolveMeetingPrep } from '@x/core/dist/knowledge/meeting_prep.js';
 import { readPrepNoteForEvent } from '@x/core/dist/knowledge/meeting_prep_brief.js';
 import { invalidateKnowledgeIndex } from '@x/core/dist/knowledge/knowledge_index.js';
-import { importBrainNotes, IMPORT_NOTE_DIALOG_EXTENSIONS } from '@x/core/dist/knowledge/import_notes.js';
+import {
+  getImportedSourceNoteContext,
+  importBrainNotes,
+  IMPORT_NOTE_DIALOG_EXTENSIONS,
+} from '@x/core/dist/knowledge/import_notes.js';
 import {
   buildNotebookContext,
   createNotebook,
@@ -2342,6 +2346,9 @@ export function setupIpcHandlers() {
         : await importBrainNotes(result.filePaths, args.targetFolder);
       if (imported.imported.length > 0) invalidateKnowledgeIndex();
       return { canceled: false, ...imported };
+    },
+    'knowledge:getImportedSourceContext': async (_event, args) => {
+      return getImportedSourceNoteContext(args.path);
     },
     'knowledge:notebooks:create': async (_event, args) => {
       const notebook = await createNotebook(args.title);

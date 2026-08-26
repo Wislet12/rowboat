@@ -2221,6 +2221,17 @@ const ipcSchemas = {
       })),
     }),
   },
+  'knowledge:getImportedSourceContext': {
+    req: z.object({ path: RelPath }),
+    res: z.object({
+      sourcePath: RelPath,
+      notePath: RelPath,
+      title: z.string(),
+      content: z.string(),
+      contentReadable: z.boolean(),
+      metadata: z.record(z.string(), z.union([z.string(), z.array(z.string())])),
+    }).nullable(),
+  },
   'knowledge:notebooks:create': {
     req: z.object({ title: z.string().min(1).max(120) }),
     res: NotebookDescriptorSchema,

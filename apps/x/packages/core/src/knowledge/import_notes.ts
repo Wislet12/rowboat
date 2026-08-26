@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { NodeHtmlMarkdown } from 'node-html-markdown';
+import { frontmatter } from '@x/shared';
 
 import { WorkDir } from '../config/config.js';
 import { isPathInside } from '../filesystem/files.js';
@@ -61,8 +62,95 @@ export type BrainNoteImportResult = {
     failures: BrainNoteImportFailure[];
 };
 
+export type ImportedSourceNoteContext = {
+    sourcePath: string;
+    notePath: string;
+    title: string;
+    content: string;
+    contentReadable: boolean;
+    metadata: Record<string, string | string[]>;
+};
+
 function slashPath(value: string): string {
     return value.replace(/\\/g, '/').replace(/\/+$/g, '');
+}
+
+function decodeFrontmatterScalar(value: string | string[] | undefined): string | null {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    if (trimmed.startsWith('"')) {
+        try {
+            const parsed = JSON.parse(trimmed);
+            return typeof parsed === 'string' ? parsed : null;
+        } catch {
+            return null;
+        }
+    }
+    return trimmed;
+}
+
+export function parseImportedSourceNote(
+    notePath: string,
+    markdown: string,
+): ImportedSourceNoteContext | null {
+    const parsed = frontmatter.parseFrontmatter(markdown);
+    const sourcePath = decodeFrontmatterScalar(parsed.fields.source_file);
+    if (!sourcePath) return null;
+    const title = decodeFrontmatterScalar(parsed.fields.title)
+        ?? path.basename(notePath, path.extname(notePath));
+    return {
+        sourcePath: slashPath(sourcePath).replace(/^\.\//, ''),
+        notePath: slashPath(notePath).replace(/^\.\//, ''),
+        title,
+        content: parsed.body,
+        contentReadable: hasMeaningfulImportedContent(parsed.body),
+        metadata: parsed.fields,
+    };
+}
+
+export function hasMeaningfulImportedContent(value: string): boolean {
+    const substantive = value
+        // pdf-parse emits these even when a PDF has no extractable text layer.
+        .replace(/^\s*--\s*\d+\s+of\s+\d+\s*--\s*$/gim, '')
+        .replace(/_No extractable text was found in this file\._/gi, '')
+        .replace(/[#*_`>\-\s]/g, '');
+    return /[\p{L}\p{N}]{2,}/u.test(substantive);
+}
+
+/**
+ * Resolve an original imported binary (PDF, Office, image, and similar) to
+ * the extracted Markdown note created alongside it during import.
+ *
+ * Only the direct parent of the reserved `_sources` folder is inspected.
+ * This keeps lookup bounded, prevents cross-notebook/source confusion, and
+ * re-reads the companion note for every chat or voice turn so edits, deletes,
+ * and permission changes take effect immediately.
+ */
+export async function getImportedSourceNoteContext(
+    sourcePathInput: string,
+): Promise<ImportedSourceNoteContext | null> {
+    const sourcePath = slashPath(sourcePathInput.trim()).replace(/^\.\//, '');
+    const absoluteSource = path.resolve(resolveWorkspacePath(sourcePath));
+    const knowledgeRoot = path.resolve(WorkDir, 'knowledge');
+    if (!isPathInside(knowledgeRoot, absoluteSource)) {
+        throw new Error('Imported note sources must stay inside the knowledge folder.');
+    }
+
+    const sourceFolder = path.dirname(absoluteSource);
+    if (path.basename(sourceFolder) !== SOURCE_FOLDER_NAME) return null;
+
+    const noteFolder = path.dirname(sourceFolder);
+    const entries = await fs.readdir(noteFolder, { withFileTypes: true });
+    for (const entry of entries) {
+        if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== '.md') continue;
+        const absoluteNotePath = path.join(noteFolder, entry.name);
+        const notePath = slashPath(path.relative(WorkDir, absoluteNotePath));
+        const markdown = await fs.readFile(absoluteNotePath, 'utf8');
+        const candidate = parseImportedSourceNote(notePath, markdown);
+        if (candidate?.sourcePath === sourcePath) return candidate;
+    }
+    return null;
 }
 
 export function normalizeBrainImportFolder(targetFolder?: string): string {
@@ -179,7 +267,9 @@ export async function extractImportedNoteContent(
     if (strategy === 'local-document') {
         const parsed = await parseFileLocally(sourcePath);
         const localBody = parsed.content?.trim() ?? '';
-        if (parsed.success && localBody) return { body: localBody, extraction: 'local-parser' };
+        if (parsed.success && hasMeaningfulImportedContent(localBody)) {
+            return { body: localBody, extraction: 'local-parser' };
+        }
 
         // Scanned PDFs, image-only Office files, and malformed local archives
         // can contain useful visible notes even when their text layer is empty.

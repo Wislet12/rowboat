@@ -116,6 +116,28 @@ describe('active note context encoding', () => {
     expect(String(encoded.content)).toContain('"attendees"')
     expect(String(encoded.content)).toContain('recorded')
   })
+
+  it('routes an insufficient imported-document extraction through LLMParse', () => {
+    const [encoded] = convertFromMessages([{
+      role: 'user',
+      content: 'What should I do next?',
+      userMessageContext: {
+        middlePane: {
+          kind: 'note',
+          path: 'knowledge/Brain/Imports/_sources/scan.pdf',
+          content: '-- 1 of 1 --',
+          metadata: {
+            context_extraction_status: 'needs-ocr',
+            original_source_path: 'knowledge/Brain/Imports/_sources/scan.pdf',
+          },
+        },
+      },
+    }])
+
+    expect(String(encoded.content)).toContain("call Rowboat's LLMParse tool")
+    expect(String(encoded.content)).toContain('original_source_path')
+    expect(String(encoded.content)).toContain('Do not say the document is unreadable')
+  })
 })
 
 describe('active notebook context encoding', () => {
