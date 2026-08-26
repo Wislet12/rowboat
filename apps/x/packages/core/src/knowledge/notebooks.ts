@@ -42,6 +42,7 @@ const NotebookSourceSchema = z.object({
     sourceFilePath: z.string().min(1).optional(),
     format: z.string().min(1).optional(),
     contentLength: z.number().int().nonnegative().optional(),
+    extraction: z.enum(['plain-text', 'local-parser', 'model-vision']).optional(),
 }).transform((source) => ({
     ...source,
     contextMode: source.contextMode ?? (source.enabled ? 'full' as const : 'off' as const),
@@ -257,6 +258,7 @@ export async function importNotebookSources(
             sourceFilePath: item.sourcePath,
             format: item.format,
             contentLength: item.contentLength,
+            extraction: item.extraction,
         }));
     await persistNotebook(notebookPath, {
         ...notebook,

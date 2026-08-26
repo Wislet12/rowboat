@@ -10,28 +10,53 @@ import { createLanguageModel } from "../../../models/models.js";
 import { getDefaultModelAndProvider, resolveProviderConfig } from "../../../models/defaults.js";
 import { captureLlmUsage } from "../../../analytics/usage.js";
 import { getCurrentUseCase, withUseCase } from "../../../analytics/use_case.js";
+import {
+    extractEpubArchive,
+    extractJupyterNotebook,
+    extractOpenDocumentArchive,
+    extractPowerPointArchive,
+    extractRtfText,
+} from "../../../knowledge/document_extractors.js";
 import { BuiltinToolsSchema } from "../types.js";
 
 
 
-// Parser libraries are loaded dynamically inside parseFile.execute()
-// to avoid pulling pdfjs-dist's DOM polyfills into the main bundle.
-// Import paths are computed so esbuild cannot statically resolve them.
+// Parser libraries are loaded dynamically inside parseFileLocally() to avoid
+// pulling pdfjs-dist's DOM polyfills into startup. Keeping the specifier as a
+// runtime value prevents static bundling while still giving Node/Vitest a real
+// dynamic-import callback (the historical new Function form failed in VM
+// modules with "A dynamic import callback was not specified").
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const _importDynamic = new Function('mod', 'return import(mod)') as (mod: string) => Promise<any>;
+const _importDynamic = (moduleName: string): Promise<any> => import(moduleName);
 
 export const LLMPARSE_MIME_TYPES: Record<string, string> = {
     '.pdf': 'application/pdf',
     '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.docm': 'application/vnd.ms-word.document.macroenabled.12',
+    '.dotx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.template',
+    '.dotm': 'application/vnd.ms-word.template.macroenabled.12',
     '.doc': 'application/msword',
     '.rtf': 'application/rtf',
     '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    '.pptm': 'application/vnd.ms-powerpoint.presentation.macroenabled.12',
+    '.ppsx': 'application/vnd.openxmlformats-officedocument.presentationml.slideshow',
+    '.ppsm': 'application/vnd.ms-powerpoint.slideshow.macroenabled.12',
+    '.potx': 'application/vnd.openxmlformats-officedocument.presentationml.template',
+    '.potm': 'application/vnd.ms-powerpoint.template.macroenabled.12',
     '.ppt': 'application/vnd.ms-powerpoint',
     '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.xlsm': 'application/vnd.ms-excel.sheet.macroenabled.12',
+    '.xltx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.template',
+    '.xltm': 'application/vnd.ms-excel.template.macroenabled.12',
     '.xls': 'application/vnd.ms-excel',
     '.odt': 'application/vnd.oasis.opendocument.text',
+    '.ott': 'application/vnd.oasis.opendocument.text-template',
     '.ods': 'application/vnd.oasis.opendocument.spreadsheet',
+    '.ots': 'application/vnd.oasis.opendocument.spreadsheet-template',
     '.odp': 'application/vnd.oasis.opendocument.presentation',
+    '.otp': 'application/vnd.oasis.opendocument.presentation-template',
+    '.epub': 'application/epub+zip',
+    '.ipynb': 'application/json',
     '.csv': 'text/csv',
     '.txt': 'text/plain',
     '.html': 'text/html',
@@ -46,7 +71,20 @@ export const LLMPARSE_MIME_TYPES: Record<string, string> = {
     '.tiff': 'image/tiff',
 };
 
-export const LOCAL_PARSE_EXTENSIONS = new Set(['.pdf', '.xlsx', '.xls', '.csv', '.docx']);
+const LOCAL_WORD_EXTENSIONS = new Set(['.docx', '.docm', '.dotx', '.dotm']);
+const LOCAL_PRESENTATION_EXTENSIONS = new Set(['.pptx', '.pptm', '.ppsx', '.ppsm', '.potx', '.potm']);
+const LOCAL_SPREADSHEET_EXTENSIONS = new Set(['.xlsx', '.xlsm', '.xltx', '.xltm', '.xls', '.ods', '.ots']);
+const LOCAL_OPEN_TEXT_EXTENSIONS = new Set(['.odt', '.ott']);
+const LOCAL_OPEN_PRESENTATION_EXTENSIONS = new Set(['.odp', '.otp']);
+
+export const LOCAL_PARSE_EXTENSIONS = new Set([
+    '.pdf', '.csv', '.rtf', '.epub', '.ipynb',
+    ...LOCAL_WORD_EXTENSIONS,
+    ...LOCAL_PRESENTATION_EXTENSIONS,
+    ...LOCAL_SPREADSHEET_EXTENSIONS,
+    ...LOCAL_OPEN_TEXT_EXTENSIONS,
+    ...LOCAL_OPEN_PRESENTATION_EXTENSIONS,
+]);
 
 export type ParsedFileResult = {
     success: boolean;
@@ -98,7 +136,7 @@ export async function parseFileLocally(filePath: string): Promise<ParsedFileResu
             }
         }
 
-        if (ext === '.xlsx' || ext === '.xls') {
+        if (LOCAL_SPREADSHEET_EXTENSIONS.has(ext)) {
             const XLSX = await _importDynamic("xlsx");
             const workbook = XLSX.read(buffer, { type: 'buffer' });
             const sheets: Record<string, string> = {};
@@ -109,7 +147,7 @@ export async function parseFileLocally(filePath: string): Promise<ParsedFileResu
             return {
                 success: true,
                 fileName,
-                format: ext === '.xlsx' ? 'xlsx' : 'xls',
+                format: ext.slice(1),
                 content: Object.entries(sheets)
                     .map(([sheetName, csv]) => `## ${sheetName}\n\n${csv}`)
                     .join('\n\n'),
@@ -138,15 +176,44 @@ export async function parseFileLocally(filePath: string): Promise<ParsedFileResu
             };
         }
 
-        if (ext === '.docx') {
+        if (LOCAL_WORD_EXTENSIONS.has(ext)) {
             const mammoth = (await _importDynamic("mammoth")).default;
             const docResult = await mammoth.extractRawText({ buffer });
             return {
                 success: true,
                 fileName,
-                format: 'docx',
+                format: ext.slice(1),
                 content: docResult.value,
+                metadata: { warnings: docResult.messages.map((message: { message: string }) => message.message) },
             };
+        }
+
+        if (LOCAL_PRESENTATION_EXTENSIONS.has(ext)) {
+            const parsed = await extractPowerPointArchive(buffer);
+            return { success: true, fileName, format: ext.slice(1), ...parsed };
+        }
+
+        if (LOCAL_OPEN_TEXT_EXTENSIONS.has(ext) || LOCAL_OPEN_PRESENTATION_EXTENSIONS.has(ext)) {
+            const parsed = await extractOpenDocumentArchive(
+                buffer,
+                ext.slice(1) as 'odt' | 'ott' | 'odp' | 'otp',
+            );
+            return { success: true, fileName, format: ext.slice(1), ...parsed };
+        }
+
+        if (ext === '.rtf') {
+            const parsed = extractRtfText(buffer);
+            return { success: true, fileName, format: 'rtf', ...parsed };
+        }
+
+        if (ext === '.epub') {
+            const parsed = await extractEpubArchive(buffer);
+            return { success: true, fileName, format: 'epub', ...parsed };
+        }
+
+        if (ext === '.ipynb') {
+            const parsed = extractJupyterNotebook(buffer);
+            return { success: true, fileName, format: 'ipynb', ...parsed };
         }
 
         return { success: false, error: 'Unexpected error' };
@@ -226,7 +293,7 @@ export async function parseFileWithLlm(filePath: string, prompt?: string): Promi
 export const parsingTools: z.infer<typeof BuiltinToolsSchema> = {
     'parseFile': {
         permission: "file-boundary",
-        description: 'Parse and extract text content from files (PDF, Excel, CSV, Word .docx). Auto-detects format from file extension.',
+        description: 'Parse and extract text content locally from PDF, modern Word, PowerPoint, Excel/OpenDocument, RTF, EPUB, Jupyter Notebook, and CSV files. Auto-detects format from file extension.',
         inputSchema: z.object({
             path: z.string().min(1).describe('File path to parse. Can be absolute, ~/..., or relative to the default root.'),
         }),
@@ -237,7 +304,7 @@ export const parsingTools: z.infer<typeof BuiltinToolsSchema> = {
 
     'LLMParse': {
         permission: "file-boundary",
-        description: 'Send a file to the configured LLM as a multimodal attachment and ask it to extract content as markdown. Best for scanned PDFs, images with text, complex layouts, or any format where local parsing falls short. Supports documents (PDF, Word, Excel, PowerPoint, CSV, TXT, HTML) and images (PNG, JPG, GIF, WebP, SVG, BMP, TIFF).',
+        description: 'Send a file to the configured LLM as a multimodal attachment and ask it to extract content as markdown. Best for scanned PDFs, legacy Office files, images with text, complex layouts, or any format where local parsing falls short. Supports documents (PDF, Word, Excel, PowerPoint, OpenDocument, EPUB, CSV, TXT, HTML) and images (PNG, JPG, GIF, WebP, SVG, BMP, TIFF).',
         inputSchema: z.object({
             path: z.string().min(1).describe('File path to parse. Can be absolute, ~/..., or relative to the default root.'),
             prompt: z.string().optional().describe('Custom instruction for the LLM (defaults to "Convert this file to well-structured markdown.")'),

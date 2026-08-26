@@ -11,7 +11,14 @@ describe('Brain note imports', () => {
         expect(getImportStrategy('notes.md')).toBe('text');
         expect(getImportStrategy('notes.html')).toBe('html');
         expect(getImportStrategy('notes.pdf')).toBe('local-document');
-        expect(getImportStrategy('slides.pptx')).toBe('model-document');
+        expect(getImportStrategy('slides.pptx')).toBe('local-document');
+        expect(getImportStrategy('lecture.pptm')).toBe('local-document');
+        expect(getImportStrategy('handout.rtf')).toBe('local-document');
+        expect(getImportStrategy('textbook.epub')).toBe('local-document');
+        expect(getImportStrategy('lab.ipynb')).toBe('local-document');
+        expect(getImportStrategy('notes.odt')).toBe('local-document');
+        expect(getImportStrategy('legacy.doc')).toBe('model-document');
+        expect(getImportStrategy('legacy.ppt')).toBe('model-document');
         expect(getImportStrategy('scan.png')).toBe('model-document');
         expect(getImportStrategy('legacy.unknown')).toBe('unknown');
     });
@@ -34,11 +41,13 @@ describe('Brain note imports', () => {
             sourcePath: 'knowledge/Brain/Imports/_sources/care-plan.docx',
             sourceFormat: 'docx',
             sourceHash: 'abc123',
+            extraction: 'local-parser',
         });
 
         expect(markdown).toContain('type: brain');
         expect(markdown).toContain('source: file-import');
         expect(markdown).toContain('source_file: "knowledge/Brain/Imports/_sources/care-plan.docx"');
+        expect(markdown).toContain('extraction: "local-parser"');
         expect(markdown).toContain('# Care Plan');
         expect(markdown).toContain('- Follow up Friday');
     });

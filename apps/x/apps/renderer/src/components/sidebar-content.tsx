@@ -12,6 +12,7 @@ import {
   FilePlus,
   Folder,
   Globe,
+  GraduationCap,
   AlertTriangle,
   Home,
   LayoutGrid,
@@ -111,6 +112,7 @@ type KnowledgeActions = {
   openGraph: () => void
   openBases: () => void
   openKnowledgeView: () => void
+  openStudyView: () => void
   openWorkspaceAt: (path?: string) => void
   createWorkspace: (name: string) => Promise<string>
   expandAll: () => void
@@ -212,7 +214,7 @@ type SidebarContentPanelProps = {
   /** Starts the mascot-guided product tour. */
   onStartTour?: () => void
   /** Which primary destination is currently active, for nav highlighting. */
-  activeNav?: 'home' | 'email' | 'meetings' | 'code' | 'knowledge' | 'agents' | 'apps' | 'workspaces' | null
+  activeNav?: 'home' | 'email' | 'meetings' | 'code' | 'study' | 'knowledge' | 'agents' | 'apps' | 'workspaces' | null
   /** Live meeting recording state, so the recording row can show its indicator/stop. */
   meetingRecordingState?: 'idle' | 'connecting' | 'recording' | 'paused' | 'stopping'
   recordingMeetingSource?: string | null
@@ -1002,6 +1004,16 @@ export function SidebarContentPanel({
                     )}
                   </div>
                 ) : null}
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  data-tour-id="nav-study"
+                  isActive={activeNav === 'study'}
+                  onClick={() => knowledgeActions.openStudyView()}
+                >
+                  <GraduationCap className="size-4 shrink-0" />
+                  <span className="flex-1 truncate">Study</span>
+                </SidebarMenuButton>
               </SidebarMenuItem>
               <SidebarMenuItem>
                 <SidebarMenuButton

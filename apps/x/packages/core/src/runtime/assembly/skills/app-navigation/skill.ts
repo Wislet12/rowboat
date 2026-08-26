@@ -65,7 +65,7 @@ Use the ` + "`file-*`" + ` tools when you need to inspect or edit note contents.
 - Results are permission-checked on every search; do not guess inaccessible paths.
 
 ### open-view — just switch the screen
-` + "`view`" + `: ` + "`home | email | meetings | live-notes | bg-tasks | chat-history | knowledge | workspace | code | bases | graph | apps`" + `
+` + "`view`" + `: ` + "`home | email | meetings | live-notes | bg-tasks | chat-history | knowledge | study | workspace | code | bases | graph | apps`" + `
 Use when the user asks to "go to"/"show" a view without a question to answer.
 
 ## Answering from Rowboat apps (any app — match by description)

@@ -144,6 +144,13 @@ import {
   updateNotebook,
   updateNotebookSource,
 } from '@x/core/dist/knowledge/notebooks.js';
+import {
+  getStudyWorkspace,
+  recordStudySession,
+  resetStudyProgress,
+  reviewStudyCard,
+  updateStudySettings,
+} from '@x/core/dist/knowledge/study.js';
 import { versionHistory, voice } from '@x/core';
 import { classifySchedule, processRowboatInstruction } from '@x/core/dist/knowledge/inline_tasks.js';
 import { getBillingInfo } from '@x/core/dist/billing/billing.js';
@@ -2379,6 +2386,25 @@ export function setupIpcHandlers() {
       // the canonical workspace boundary. Deleted or newly inaccessible
       // sources therefore disappear from chat and voice context immediately.
       return buildNotebookContext(args.path, args.query);
+    },
+    'knowledge:study:getWorkspace': async (_event, args) => {
+      return getStudyWorkspace(args.path);
+    },
+    'knowledge:study:updateSettings': async (_event, args) => {
+      return updateStudySettings(args.path, {
+        ...(args.examDate !== undefined ? { examDate: args.examDate } : {}),
+        ...(args.dailyGoalMinutes !== undefined ? { dailyGoalMinutes: args.dailyGoalMinutes } : {}),
+        ...(args.sessionMinutes !== undefined ? { sessionMinutes: args.sessionMinutes } : {}),
+      });
+    },
+    'knowledge:study:reviewCard': async (_event, args) => {
+      return reviewStudyCard(args.path, args.cardId, args.rating, args.idempotencyKey);
+    },
+    'knowledge:study:recordSession': async (_event, args) => {
+      return recordStudySession(args.path, args.minutes, args.mode, args.idempotencyKey);
+    },
+    'knowledge:study:resetProgress': async (_event, args) => {
+      return resetStudyProgress(args.path);
     },
     'knowledge:saveChatOutput': async (_event, args) => {
       const saved = await saveChatOutput(args);

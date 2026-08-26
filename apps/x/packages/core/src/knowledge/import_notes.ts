@@ -20,6 +20,7 @@ const SOURCE_FOLDER_NAME = '_sources';
 const TEXT_EXTENSIONS = new Set([
     '.md', '.markdown', '.txt', '.text', '.csv', '.tsv', '.json', '.jsonl',
     '.yaml', '.yml', '.xml', '.log', '.rst', '.adoc', '.ini', '.toml', '.env',
+    '.org', '.tex', '.texi', '.typ', '.properties', '.cfg', '.conf', '.ics', '.vcf',
     '.js', '.jsx', '.ts', '.tsx', '.py', '.java', '.cs', '.go', '.rs', '.c',
     '.cpp', '.h', '.hpp', '.sql', '.sh', '.zsh', '.fish', '.ps1', '.bat',
 ]);
@@ -28,14 +29,18 @@ const HTML_EXTENSIONS = new Set(['.html', '.htm']);
 
 export const IMPORT_NOTE_DIALOG_EXTENSIONS = [
     'md', 'markdown', 'txt', 'text', 'rtf', 'html', 'htm', 'pdf', 'doc', 'docx',
-    'ppt', 'pptx', 'xls', 'xlsx', 'csv', 'tsv', 'json', 'jsonl', 'yaml', 'yml',
-    'xml', 'odt', 'ods', 'odp', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg',
+    'docm', 'dotx', 'dotm', 'ppt', 'pptx', 'pptm', 'ppsx', 'ppsm', 'potx', 'potm',
+    'xls', 'xlsx', 'xlsm', 'xltx', 'xltm', 'csv', 'tsv', 'json', 'jsonl', 'yaml', 'yml',
+    'xml', 'odt', 'ott', 'ods', 'ots', 'odp', 'otp', 'epub', 'ipynb',
+    'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg',
     'bmp', 'tif', 'tiff', 'log', 'rst', 'adoc', 'ini', 'toml', 'js', 'jsx',
     'ts', 'tsx', 'py', 'java', 'cs', 'go', 'rs', 'c', 'cpp', 'h', 'hpp',
-    'sql', 'sh', 'zsh', 'fish', 'ps1', 'bat',
+    'sql', 'sh', 'zsh', 'fish', 'ps1', 'bat', 'org', 'tex', 'texi', 'typ',
+    'properties', 'cfg', 'conf', 'ics', 'vcf',
 ];
 
 export type ImportStrategy = 'text' | 'html' | 'local-document' | 'model-document' | 'unknown';
+export type ImportExtraction = 'plain-text' | 'local-parser' | 'model-vision';
 
 export type ImportedBrainNote = {
     path: string;
@@ -43,6 +48,7 @@ export type ImportedBrainNote = {
     title: string;
     format: string;
     contentLength: number;
+    extraction: ImportExtraction;
 };
 
 export type BrainNoteImportFailure = {
@@ -101,6 +107,7 @@ export function buildImportedNoteMarkdown(input: {
     sourcePath: string;
     sourceFormat: string;
     sourceHash: string;
+    extraction?: ImportExtraction;
 }): string {
     const body = input.body.trim();
     return [
@@ -113,6 +120,7 @@ export function buildImportedNoteMarkdown(input: {
         `source_file: ${escapeFrontmatterString(input.sourcePath)}`,
         `source_format: ${escapeFrontmatterString(input.sourceFormat)}`,
         `source_sha256: ${escapeFrontmatterString(input.sourceHash)}`,
+        ...(input.extraction ? [`extraction: ${escapeFrontmatterString(input.extraction)}`] : []),
         '---',
         '',
         `# ${input.title}`,
@@ -157,14 +165,36 @@ function looksLikeText(buffer: Buffer): boolean {
     return sample.length === 0 || controls / sample.length < 0.02;
 }
 
-async function extractImportBody(sourcePath: string, strategy: ImportStrategy, sourceBuffer: Buffer): Promise<string> {
-    if (strategy === 'text') return sourceBuffer.toString('utf8');
-    if (strategy === 'html') return NodeHtmlMarkdown.translate(sourceBuffer.toString('utf8'));
+export async function extractImportedNoteContent(
+    sourcePath: string,
+    strategy: ImportStrategy = getImportStrategy(sourcePath),
+    sourceBuffer?: Buffer,
+): Promise<{ body: string; extraction: ImportExtraction }> {
+    const buffer = sourceBuffer ?? await fs.readFile(sourcePath);
+    if (strategy === 'text') return { body: buffer.toString('utf8'), extraction: 'plain-text' };
+    if (strategy === 'html') {
+        return { body: NodeHtmlMarkdown.translate(buffer.toString('utf8')), extraction: 'plain-text' };
+    }
 
     if (strategy === 'local-document') {
         const parsed = await parseFileLocally(sourcePath);
-        if (!parsed.success) throw new Error(parsed.error || 'Local document parsing failed.');
-        return parsed.content || '';
+        const localBody = parsed.content?.trim() ?? '';
+        if (parsed.success && localBody) return { body: localBody, extraction: 'local-parser' };
+
+        // Scanned PDFs, image-only Office files, and malformed local archives
+        // can contain useful visible notes even when their text layer is empty.
+        // Use the configured multimodal provider only as a bounded fallback.
+        if (LLMPARSE_MIME_TYPES[path.extname(sourcePath).toLowerCase()]) {
+            const modelParsed = await parseFileWithLlm(
+                sourcePath,
+                'Extract every readable note from this document into faithful, well-structured markdown. Preserve headings, slide numbers, speaker notes, tables, lists, dates, names, and important metadata. For scans or images, use OCR. Do not invent missing content.',
+            );
+            if (modelParsed.success && modelParsed.content?.trim()) {
+                return { body: modelParsed.content.trim(), extraction: 'model-vision' };
+            }
+            throw new Error(modelParsed.error || parsed.error || 'Document parsing found no readable content.');
+        }
+        throw new Error(parsed.error || 'Local document parsing found no readable content.');
     }
 
     if (strategy === 'model-document') {
@@ -173,13 +203,14 @@ async function extractImportBody(sourcePath: string, strategy: ImportStrategy, s
             'Convert this note or document into faithful, well-structured markdown. Preserve headings, tables, lists, dates, names, and important metadata. Do not invent missing content.',
         );
         if (!parsed.success) throw new Error(parsed.error || 'Document parsing failed.');
-        return parsed.content || '';
+        if (!parsed.content?.trim()) throw new Error('Document parsing found no readable content.');
+        return { body: parsed.content.trim(), extraction: 'model-vision' };
     }
 
     // Unknown extensions still import when they are genuinely text. This makes
     // the Brain useful for uncommon note/code formats without pretending that
     // arbitrary binary formats can be decoded safely.
-    if (looksLikeText(sourceBuffer)) return sourceBuffer.toString('utf8');
+    if (looksLikeText(buffer)) return { body: buffer.toString('utf8'), extraction: 'plain-text' };
     throw new Error('Unsupported binary format. Convert it to text, PDF, Office, OpenDocument, or an image first.');
 }
 
@@ -190,7 +221,8 @@ async function importOneBrainNote(sourcePath: string, targetFolder: string): Pro
 
     const sourceBuffer = await fs.readFile(sourcePath);
     const strategy = getImportStrategy(sourcePath);
-    const body = await extractImportBody(sourcePath, strategy, sourceBuffer);
+    const extracted = await extractImportedNoteContent(sourcePath, strategy, sourceBuffer);
+    const body = extracted.body;
     const sourceName = cleanSourceName(sourcePath);
     const title = cleanBaseName(sourcePath);
     const extension = path.extname(sourceName).toLowerCase();
@@ -214,6 +246,7 @@ async function importOneBrainNote(sourcePath: string, targetFolder: string): Pro
         sourcePath: importedSourcePath,
         sourceFormat: extension.slice(1) || 'text',
         sourceHash,
+        extraction: extracted.extraction,
     });
     await writeFile(notePath, markdown, { encoding: 'utf8', mkdirp: true, atomic: true });
 
@@ -223,6 +256,7 @@ async function importOneBrainNote(sourcePath: string, targetFolder: string): Pro
         title,
         format: extension.slice(1) || 'text',
         contentLength: body.length,
+        extraction: extracted.extraction,
     };
 }
 

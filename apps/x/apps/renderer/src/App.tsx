@@ -2299,14 +2299,14 @@ function App() {
     if (isAppsTabPath(tab.path)) return 'Mini Apps'
     if (isEmailTabPath(tab.path)) return 'Email'
     if (isWorkspaceTabPath(tab.path)) return 'Workspace'
-    if (isKnowledgeViewTabPath(tab.path)) return 'Brain'
+    if (isKnowledgeViewTabPath(tab.path)) return knowledgeViewMode === 'study' ? 'Study' : 'Brain'
     if (isChatHistoryTabPath(tab.path)) return 'Chat history'
     if (isHomeTabPath(tab.path)) return 'Home'
     if (isCodeTabPath(tab.path)) return 'Code'
     if (tab.path === BASES_DEFAULT_TAB_PATH) return 'Bases'
     if (tab.path.endsWith('.base')) return tab.path.split('/').pop()?.replace(/\.base$/i, '') || 'Base'
     return tab.path.split('/').pop()?.replace(/\.md$/i, '') || tab.path
-  }, [])
+  }, [knowledgeViewMode])
 
   // Pending requests state
   const [, setPendingPermissionRequests] = useState<Map<string, z.infer<typeof ToolPermissionRequestEvent>>>(new Map())
@@ -5910,6 +5910,7 @@ function App() {
         case 'bg-tasks': void navigateToView({ type: 'bg-tasks' }); break
         case 'chat-history': void navigateToView({ type: 'chat-history' }); break
         case 'knowledge': void navigateToView({ type: 'knowledge-view' }); break
+        case 'study': void navigateToView({ type: 'knowledge-view', mode: 'study' }); break
         case 'workspace': void navigateToView({ type: 'workspace' }); break
         case 'code': void navigateToView({ type: 'code' }); break
         case 'apps': openAppsView(); break
@@ -6479,6 +6480,9 @@ function App() {
 
       if (result.imported.length === 0) return []
       const importedPaths = result.imported.map((item) => item.path)
+      const importedFormats = [...new Set(result.imported.map((item) => item.format.toUpperCase()))]
+      const modelProcessed = result.imported.filter((item) => item.extraction === 'model-vision').length
+      const importDetail = `${importedFormats.join(', ')} processed${modelProcessed > 0 ? ` · ${modelProcessed} used OCR/model extraction` : ' locally'}`
       const parentPaths = new Set(importedPaths.map((itemPath) => itemPath.split('/').slice(0, -1).join('/')))
       setExpandedPaths((previous) => new Set([...previous, ...parentPaths]))
       setTree(await loadDirectory())
@@ -6486,7 +6490,8 @@ function App() {
       if (result.failures.length === 0) {
         toast.success(importingIntoNotebook
           ? (result.imported.length === 1 ? 'Source added to notebook' : `${result.imported.length} sources added to notebook`)
-          : (result.imported.length === 1 ? 'Note imported into Brain' : `${result.imported.length} notes imported into Brain`))
+          : (result.imported.length === 1 ? 'Note imported into Brain' : `${result.imported.length} notes imported into Brain`),
+        { description: importDetail })
       }
       return importedPaths
     },
@@ -6512,7 +6517,7 @@ function App() {
       if (selectedPath?.startsWith(`${path}/`)) setSelectedPath(null)
       if (activeNotebookPath === path) {
         setKnowledgeViewFolderPath(null)
-        void navigateToView({ type: 'knowledge-view' })
+        void navigateToView({ type: 'knowledge-view', mode: knowledgeViewMode })
       }
     },
     setNotebookSourceEnabled: async (path: string, sourcePath: string, enabled: boolean) => {
@@ -6542,6 +6547,14 @@ function App() {
     },
     askNotebook: (prompt: string) => {
       handlePromptSubmitRef.current?.({ text: prompt, files: [] })
+    },
+    startStudyChat: (prompt: string) => {
+      submitFromPalette(prompt, null)
+    },
+    startStudyVoice: () => {
+      if (!isChatSidebarOpen) setIsChatSidebarOpen(true)
+      handleNewChatTabInSidebar()
+      window.setTimeout(() => { void startCall('share') }, 0)
     },
     createFolder: async (parentPath: string = 'knowledge'): Promise<string> => {
       try {
@@ -6592,6 +6605,9 @@ function App() {
       // Open in the middle pane without touching the chat sidebar — leave it
       // open or closed exactly as the user had it (matches Email/Meetings).
       void navigateToView({ type: 'knowledge-view' })
+    },
+    openStudyView: () => {
+      void navigateToView({ type: 'knowledge-view', mode: 'study' })
     },
     createWorkspace: async (name: string): Promise<string> => {
       const trimmed = name.trim()
@@ -6682,7 +6698,7 @@ function App() {
           if (selectedPath?.startsWith(`${notebookRoot}/`)) setSelectedPath(null)
           if (activeNotebookPath === notebookRoot) {
             setKnowledgeViewFolderPath(null)
-            void navigateToView({ type: 'knowledge-view' })
+            void navigateToView({ type: 'knowledge-view', mode: knowledgeViewMode })
           }
           return
         }
@@ -6758,7 +6774,7 @@ function App() {
     onOpenInNewTab: (path: string) => {
       openFileInNewTab(path)
     },
-  }), [tree, selectedPath, activeNotebookPath, isGraphOpen, selectedBackgroundTask, workspaceRoot, navigateToFile, navigateToView, openFileInNewTab, fileTabs, closeFileTab, removeEditorCacheForPath, loadDirectory])
+  }), [tree, selectedPath, activeNotebookPath, knowledgeViewMode, isGraphOpen, selectedBackgroundTask, workspaceRoot, navigateToFile, navigateToView, openFileInNewTab, fileTabs, closeFileTab, removeEditorCacheForPath, loadDirectory, submitFromPalette, isChatSidebarOpen, handleNewChatTabInSidebar, startCall])
 
   // Drives the mascot product tour through the app's main sections
   const handleTourNavigate = useCallback((target: TourNavTarget) => {
@@ -7498,6 +7514,7 @@ function App() {
                 : isEmailOpen ? 'email'
                 : isMeetingsOpen ? 'meetings'
                 : isCodeOpen ? 'code'
+                : isKnowledgeViewOpen && knowledgeViewMode === 'study' ? 'study'
                 : (isKnowledgeViewOpen || isGraphOpen || (selectedPath != null && selectedPath.startsWith('knowledge/'))) ? 'knowledge'
                 : isBgTasksOpen ? 'agents'
                 : isAppsOpen ? 'apps'
@@ -7843,6 +7860,8 @@ function App() {
                       updateNotebookSource: knowledgeActions.updateNotebookSource,
                       removeNotebookSource: knowledgeActions.removeNotebookSource,
                       askNotebook: knowledgeActions.askNotebook,
+                      startStudyChat: knowledgeActions.startStudyChat,
+                      startStudyVoice: knowledgeActions.startStudyVoice,
                       createFolder: knowledgeActions.createFolder,
                       rename: knowledgeActions.rename,
                       remove: knowledgeActions.remove,
@@ -7884,8 +7903,9 @@ function App() {
                     )}
                     folderPath={knowledgeViewFolderPath}
                     onNavigateFolder={(path) => {
-                      setKnowledgeViewMode('files')
-                      void navigateToView({ type: 'knowledge-view', folderPath: path ?? undefined, mode: 'files' })
+                      const nextMode = knowledgeViewMode === 'study' ? 'study' : 'files'
+                      setKnowledgeViewMode(nextMode)
+                      void navigateToView({ type: 'knowledge-view', folderPath: path ?? undefined, mode: nextMode })
                     }}
                     onOpenNote={(path) => navigateToFile(path)}
                     onOpenSearch={() => { setSearchDefaultScope('knowledge'); setIsSearchOpen(true) }}

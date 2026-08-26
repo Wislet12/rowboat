@@ -99,6 +99,7 @@ const NotebookSourceDescriptorSchema = z.object({
   sourceFilePath: RelPath.optional(),
   format: z.string().optional(),
   contentLength: z.number().int().nonnegative().optional(),
+  extraction: z.enum(['plain-text', 'local-parser', 'model-vision']).optional(),
   available: z.boolean(),
   modifiedAt: z.number().nullable(),
   size: z.number().int().nonnegative().nullable(),
@@ -141,6 +142,61 @@ const NotebookContextSnapshotSchema = z.object({
     readableSourceCount: z.number().int().nonnegative(),
   }),
   capturedAt: z.string(),
+});
+
+const StudySettingsSchema = z.object({
+  examDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
+  dailyGoalMinutes: z.number().int().min(5).max(480),
+  sessionMinutes: z.number().int().min(5).max(180),
+});
+const StudyCardProgressSchema = z.object({
+  repetitions: z.number().int().nonnegative(),
+  lapses: z.number().int().nonnegative(),
+  intervalDays: z.number().min(0).max(3650),
+  ease: z.number().min(1.3).max(3),
+  dueAt: z.string().nullable(),
+  lastReviewedAt: z.string().nullable(),
+});
+const StudyCardSchema = z.object({
+  id: z.string(),
+  front: z.string(),
+  back: z.string(),
+  sourceId: z.string(),
+  sourcePath: RelPath,
+  sourceTitle: z.string(),
+});
+const StudyQuizQuestionSchema = z.object({
+  id: z.string(),
+  prompt: z.string(),
+  options: z.array(z.string()).min(2).max(4),
+  correctIndex: z.number().int().nonnegative(),
+  explanation: z.string(),
+  sourceId: z.string(),
+  sourcePath: RelPath,
+  sourceTitle: z.string(),
+});
+const StudyWorkspaceSchema = z.object({
+  notebook: NotebookDescriptorSchema,
+  settings: StudySettingsSchema,
+  cards: z.array(StudyCardSchema),
+  quiz: z.array(StudyQuizQuestionSchema),
+  progress: z.object({
+    totalMinutes: z.number().int().nonnegative(),
+    todayMinutes: z.number().int().nonnegative(),
+    sessionsCompleted: z.number().int().nonnegative(),
+    currentStreak: z.number().int().nonnegative(),
+    reviewProgressPercent: z.number().int().min(0).max(100),
+    dueCount: z.number().int().nonnegative(),
+    reviewedCount: z.number().int().nonnegative(),
+    lastStudiedAt: z.string().nullable(),
+    nextDueAt: z.string().nullable(),
+    cardProgress: z.record(z.string(), StudyCardProgressSchema),
+  }),
+  retrievalEvidence: NotebookContextSnapshotSchema.shape.retrievalEvidence,
+  unavailableSources: NotebookContextSnapshotSchema.shape.unavailableSources,
+  coverageNotice: z.string(),
+  lastRecoveryPath: RelPath.nullable(),
+  generatedAt: z.string(),
 });
 
 const RowboatRealtimeVoiceIdentitySchema = z.object({
@@ -2157,6 +2213,7 @@ const ipcSchemas = {
         title: z.string(),
         format: z.string(),
         contentLength: z.number().int().nonnegative(),
+        extraction: z.enum(['plain-text', 'local-parser', 'model-vision']),
       })),
       failures: z.array(z.object({
         sourcePath: z.string(),
@@ -2219,6 +2276,41 @@ const ipcSchemas = {
       query: z.string().max(2_000).optional(),
     }),
     res: NotebookContextSnapshotSchema,
+  },
+  'knowledge:study:getWorkspace': {
+    req: z.object({ path: RelPath }),
+    res: StudyWorkspaceSchema,
+  },
+  'knowledge:study:updateSettings': {
+    req: z.object({
+      path: RelPath,
+      examDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+      dailyGoalMinutes: z.number().int().min(5).max(480).optional(),
+      sessionMinutes: z.number().int().min(5).max(180).optional(),
+    }),
+    res: StudyWorkspaceSchema,
+  },
+  'knowledge:study:reviewCard': {
+    req: z.object({
+      path: RelPath,
+      cardId: z.string().min(1).max(200),
+      rating: z.enum(['again', 'hard', 'good', 'easy']),
+      idempotencyKey: z.string().min(1).max(200),
+    }),
+    res: StudyWorkspaceSchema,
+  },
+  'knowledge:study:recordSession': {
+    req: z.object({
+      path: RelPath,
+      minutes: z.number().int().min(1).max(720),
+      mode: z.enum(['flashcards', 'quiz', 'tutor', 'review', 'other']),
+      idempotencyKey: z.string().min(1).max(200),
+    }),
+    res: StudyWorkspaceSchema,
+  },
+  'knowledge:study:resetProgress': {
+    req: z.object({ path: RelPath }),
+    res: StudyWorkspaceSchema,
   },
   'knowledge:saveChatOutput': {
     req: z.object({

@@ -30,7 +30,7 @@ export const appNavigationTools: z.infer<typeof BuiltinToolsSchema> = {
             // open-app
             appId: z.string().optional().describe("App folder slug under ~/.rowboat/apps (for open-app) — opens the app in the middle pane."),
             // open-view / read-view
-            view: z.enum(["home", "email", "meetings", "live-notes", "bg-tasks", "chat-history", "knowledge", "workspace", "code", "bases", "graph", "apps"]).optional().describe("Which view to open (open-view) or read (read-view; supported for read: email, bg-tasks, chat-history, apps)"),
+            view: z.enum(["home", "email", "meetings", "live-notes", "bg-tasks", "chat-history", "knowledge", "study", "workspace", "code", "bases", "graph", "apps"]).optional().describe("Which view to open (open-view) or read (read-view; supported for read: email, bg-tasks, chat-history, apps)"),
             // read-view (email)
             query: z.string().optional().describe("For read-view on email: runs a LIVE Gmail search over the user's ENTIRE mailbox (not just synced mail) via the Gmail API. Supports full Gmail search operators: from:, to:, subject:, before:/after:, has:attachment, quoted phrases, OR, etc. Omit to list the latest important inbox threads."),
             limit: z.number().int().min(1).max(50).optional().describe("For read-view: max items to return (default 15)"),

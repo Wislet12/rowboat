@@ -6,22 +6,16 @@ import {
   Copy,
   ExternalLink,
   FilePlus,
-  FileQuestion,
   FileText,
   FolderOpen,
   FolderPlus,
-  GitCompareArrows,
-  GraduationCap,
-  ListChecks,
   MessageSquareText,
   Network,
   Pencil,
   Save,
   SearchIcon,
   Settings2,
-  Sparkles,
   Table2,
-  TimerReset,
   Trash2,
   Upload,
 } from 'lucide-react'
@@ -54,7 +48,9 @@ import {
 } from '@/components/ui/dialog'
 import { VoiceNoteButton } from '@/components/sidebar-content'
 import { NoteActions } from '@/components/note-actions'
+import { StudyView } from '@/components/study-view'
 import { formatRelativeTime } from '@/lib/relative-time'
+import { NOTEBOOK_ARTIFACTS } from '@/lib/notebook-artifacts'
 import { toast } from '@/lib/toast'
 import { cn } from '@/lib/utils'
 
@@ -83,6 +79,7 @@ type NotebookDescriptor = {
     sourceFilePath?: string
     format?: string
     contentLength?: number
+    extraction?: 'plain-text' | 'local-parser' | 'model-vision'
     available: boolean
     modifiedAt: number | null
     size: number | null
@@ -102,6 +99,8 @@ export type KnowledgeViewActions = {
   updateNotebookSource: (path: string, sourcePath: string, title: string) => Promise<NotebookDescriptor>
   removeNotebookSource: (path: string, sourcePath: string) => Promise<NotebookDescriptor>
   askNotebook: (prompt: string) => void
+  startStudyChat: (prompt: string) => void
+  startStudyVoice: () => void
   createFolder: (parentPath?: string) => Promise<string>
   rename: (path: string, newName: string, isDir: boolean) => Promise<void>
   remove: (path: string) => Promise<void>
@@ -111,7 +110,7 @@ export type KnowledgeViewActions = {
   onOpenInNewTab?: (path: string) => void
 }
 
-export type KnowledgeViewMode = 'graph' | 'basis' | 'files'
+export type KnowledgeViewMode = 'graph' | 'basis' | 'files' | 'study'
 
 type KnowledgeViewProps = {
   tree: TreeNode[]
@@ -136,45 +135,6 @@ function isNotebookFolderPath(path?: string | null): path is string {
   if (!path) return false
   return /^knowledge\/Brain\/Notebooks\/[^/]+$/.test(path.replace(/\\/g, '/').replace(/\/+$/g, ''))
 }
-
-const NOTEBOOK_ARTIFACTS = [
-  {
-    icon: Sparkles,
-    label: 'Source summary',
-    description: 'Key ideas and evidence with citations.',
-    prompt: 'Summarize the selected notebook sources. Organize the key ideas clearly and cite every factual claim with [S#].',
-  },
-  {
-    icon: GraduationCap,
-    label: 'Study guide',
-    description: 'Concepts, definitions, and review questions.',
-    prompt: 'Create a comprehensive study guide from the selected notebook sources with key concepts, definitions, memory cues, and review questions. Cite each section with [S#].',
-  },
-  {
-    icon: FileQuestion,
-    label: 'FAQ',
-    description: 'Important questions answered from the sources.',
-    prompt: 'Create an FAQ from the selected notebook sources. Answer only from the material and cite each answer with [S#].',
-  },
-  {
-    icon: TimerReset,
-    label: 'Timeline',
-    description: 'Dates, events, and dependencies in order.',
-    prompt: 'Build a chronological timeline from the selected notebook sources. Include dates, events, dependencies, uncertainty, and [S#] citations.',
-  },
-  {
-    icon: GitCompareArrows,
-    label: 'Compare sources',
-    description: 'Agreements, differences, and contradictions.',
-    prompt: 'Compare the selected notebook sources. Identify agreements, differences, contradictions, and gaps with precise [S#] citations.',
-  },
-  {
-    icon: ListChecks,
-    label: 'Quiz me',
-    description: 'An interactive mastery check.',
-    prompt: 'Quiz me interactively on the selected notebook sources. Ask one question at a time, wait for my answer, then explain it with [S#] citations.',
-  },
-] as const
 
 // Theme-aware accent palette for folder avatars — colored letter on a faint
 // tint of the same hue. Mirrors the design's six-colour rotation.
@@ -297,6 +257,20 @@ export function KnowledgeView({
   // back to the root overview rather than holding a dangling drill-down.
   const currentFolder = folderPath ? findNode(tree, folderPath) : null
   const currentNotebookPath = isNotebookFolderPath(currentFolder?.path) ? currentFolder.path : null
+
+  if (mode === 'study') {
+    return (
+      <StudyView
+        tree={tree}
+        notebookPath={currentNotebookPath}
+        actions={actions}
+        onOpenNotebook={onNavigateFolder}
+        onOpenNotebookStudio={() => onModeChange('files')}
+        onOpenNote={onOpenNote}
+        onOpenSearch={onOpenSearch}
+      />
+    )
+  }
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-[#f8f8f9] dark:bg-[#0b0b0d]">
@@ -724,7 +698,7 @@ function NotebookDetail({
               >
                 <Upload className="mb-2 size-5 text-muted-foreground" />
                 <span className="text-sm font-medium text-foreground">Add your first sources</span>
-                <span className="mt-1 text-xs text-muted-foreground">PDF, Word, PowerPoint, spreadsheets, Markdown, text, images, and more</span>
+                <span className="mt-1 max-w-xl text-xs leading-5 text-muted-foreground">Markdown, PDF/OCR, Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, Jupyter notebooks, HTML, text/data, and images</span>
               </button>
             ) : (
               <div className="max-h-[360px] space-y-1 overflow-y-auto pr-1">
@@ -755,7 +729,7 @@ function NotebookDetail({
                     >
                       <span className="block truncate text-sm font-medium text-foreground">{source.title}</span>
                       <span className="block truncate text-xs text-muted-foreground">
-                        S{index + 1} · {source.format?.toUpperCase() || 'NOTE'} · {source.available ? 'Ready' : 'Unavailable'}
+                        S{index + 1} · {source.format?.toUpperCase() || 'NOTE'} · {source.extraction === 'model-vision' ? 'OCR/model' : source.extraction === 'local-parser' ? 'Local extraction' : source.extraction === 'plain-text' ? 'Text' : 'Imported'} · {source.available ? 'Ready' : 'Unavailable'}
                       </span>
                     </button>
                     <button
