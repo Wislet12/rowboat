@@ -29,6 +29,7 @@ import {
   LoaderIcon,
   Mail,
   MessageSquare,
+  Network,
   Settings,
   Square,
   Video,
@@ -214,7 +215,7 @@ type SidebarContentPanelProps = {
   /** Starts the mascot-guided product tour. */
   onStartTour?: () => void
   /** Which primary destination is currently active, for nav highlighting. */
-  activeNav?: 'home' | 'email' | 'meetings' | 'code' | 'study' | 'knowledge' | 'agents' | 'apps' | 'workspaces' | null
+  activeNav?: 'home' | 'email' | 'meetings' | 'code' | 'study' | 'mindspace' | 'knowledge' | 'agents' | 'apps' | 'workspaces' | null
   /** Live meeting recording state, so the recording row can show its indicator/stop. */
   meetingRecordingState?: 'idle' | 'connecting' | 'recording' | 'paused' | 'stopping'
   recordingMeetingSource?: string | null
@@ -649,7 +650,9 @@ export function SidebarContentPanel({
     return () => { cancelled = true }
   }, [pinnedAppFolders])
   const pinnedApps = pinnedAppFolders
-    .filter((f) => pinnedAppNames === null || pinnedAppNames.has(f))
+    // Mindspace is a permanent first-class destination below, so an older
+    // user pin must not render a duplicate shortcut.
+    .filter((f) => f !== 'mindspace' && (pinnedAppNames === null || pinnedAppNames.has(f)))
     .map((f) => ({ folder: f, name: pinnedAppNames?.get(f) ?? f }))
 
   // Chat pending delete confirmation, if any.
@@ -1013,6 +1016,16 @@ export function SidebarContentPanel({
                 >
                   <GraduationCap className="size-4 shrink-0" />
                   <span className="flex-1 truncate">Study</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  data-tour-id="nav-mindspace"
+                  isActive={activeNav === 'mindspace'}
+                  onClick={() => onOpenApp?.('mindspace')}
+                >
+                  <Network className="size-4 shrink-0" />
+                  <span className="flex-1 truncate">Mindspace</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
               <SidebarMenuItem>

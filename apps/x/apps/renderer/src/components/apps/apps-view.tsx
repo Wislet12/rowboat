@@ -174,10 +174,11 @@ function Card({ app, index, onOpen, isPinned, onTogglePin }: {
   )
 }
 
-export function AppsView({ initialAppFolder, initialVersion, onNewApp }: {
+export function AppsView({ initialAppFolder, initialVersion, onNewApp, onSelectedAppChange }: {
   initialAppFolder?: string | null
   initialVersion?: number
   onNewApp?: () => void
+  onSelectedAppChange?: (folder: string | null) => void
 } = {}) {
   // null = auto: land on "My apps" normally, but fall through to the catalog
   // until the user has an app of their own. An explicit tab click wins.
@@ -194,8 +195,12 @@ export function AppsView({ initialAppFolder, initialVersion, onNewApp }: {
   const [appliedVersion, setAppliedVersion] = useState(initialVersion)
   if (initialVersion !== appliedVersion) {
     setAppliedVersion(initialVersion)
-    if (initialAppFolder) setSelectedFolder(initialAppFolder)
+    setSelectedFolder(initialAppFolder ?? null)
   }
+
+  useEffect(() => {
+    onSelectedAppChange?.(selectedFolder)
+  }, [onSelectedAppChange, selectedFolder])
 
   useEffect(() => {
     let cancelled = false

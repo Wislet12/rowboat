@@ -3167,6 +3167,7 @@ function App() {
   // Mini App to auto-open in the Mini Apps view (set by app-navigation open-app).
   const [appInitialId, setAppInitialId] = useState<string | null>(null)
   const [appIdVersion, setAppIdVersion] = useState(0)
+  const [activeAppFolder, setActiveAppFolder] = useState<string | null>(null)
 
   const loadBgTaskSummaries = useCallback(async () => {
     try {
@@ -7589,6 +7590,7 @@ function App() {
                 : isKnowledgeViewOpen && knowledgeViewMode === 'study' ? 'study'
                 : (isKnowledgeViewOpen || isGraphOpen || (selectedPath != null && selectedPath.startsWith('knowledge/'))) ? 'knowledge'
                 : isBgTasksOpen ? 'agents'
+                : isAppsOpen && activeAppFolder === 'mindspace' ? 'mindspace'
                 : isAppsOpen ? 'apps'
                 : isWorkspaceOpen ? 'workspaces'
                 : null
@@ -7597,7 +7599,7 @@ function App() {
               onOpenCode={openCodeView}
               onOpenBgTasks={() => { setBgTaskInitialSlug(null); setBgTaskSlugVersion((v) => v + 1); openBgTasksView() }}
               onOpenAgent={(slug) => { setBgTaskInitialSlug(slug); setBgTaskSlugVersion((v) => v + 1); openBgTasksView() }}
-              onOpenApps={openAppsView}
+              onOpenApps={() => { setAppInitialId(null); setAppIdVersion((v) => v + 1); openAppsView() }}
               onOpenApp={(folder) => { setAppInitialId(folder); setAppIdVersion((v) => v + 1); openAppsView() }}
               recentRuns={runs}
               onOpenRun={(rid) => void navigateToView({ type: 'chat', runId: rid })}
@@ -7888,6 +7890,7 @@ function App() {
                   <AppsView
                     initialAppFolder={appInitialId}
                     initialVersion={appIdVersion}
+                    onSelectedAppChange={setActiveAppFolder}
                     onNewApp={() => prefillChat('Build me an app that ')}
                   />
                 </div>
