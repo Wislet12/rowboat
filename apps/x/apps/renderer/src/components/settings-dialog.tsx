@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { useState, useEffect, useCallback, useMemo } from "react"
-import { Server, Key, Shield, Palette, Monitor, Sun, Moon, Loader2, CheckCircle2, Plus, Minus, X, Wrench, Search, ChevronRight, Link2, Tags, Mail, BookOpen, User, Plug, HelpCircle, MessageCircle, Terminal, AlertTriangle, RefreshCw, PanelRight, Bell, Smartphone } from "lucide-react"
+import { Server, Key, Shield, ShieldCheck, Palette, Monitor, Sun, Moon, Loader2, CheckCircle2, Plus, Minus, X, Wrench, Search, ChevronRight, Link2, Tags, Mail, BookOpen, User, Plug, HelpCircle, MessageCircle, Terminal, AlertTriangle, RefreshCw, PanelRight, Bell, Smartphone, Keyboard } from "lucide-react"
 
 import {
   Dialog,
@@ -20,7 +20,8 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import { cn } from "@/lib/utils"
+import { cn, compactPath, parentPath } from "@/lib/utils"
+import { SPACES_ENABLED } from "@/lib/feature-flags"
 import * as analytics from "@/lib/analytics"
 import { useTheme } from "@/contexts/theme-context"
 import { toast } from "sonner"
@@ -33,10 +34,12 @@ import { DEFAULT_TURN_LIMITS_SETTINGS } from "@x/shared/src/turn-limits.js"
 import type { ipc as ipcShared } from "@x/shared"
 import { startProvisioning, useProvisioning, enabledOptimistic, type AgentStatus, type CodeModeAgentStatus } from "@/lib/code-mode-provisioning"
 import { ModelSelectionSection } from "@/components/settings/model-selection-section"
+import { PermissionsSettings } from "@/components/settings/permissions-settings"
+import { ShortcutSettings } from "@/components/settings/shortcut-settings"
 import { ProvidersSection } from "@/components/settings/providers-section"
 import { useModels } from "@/hooks/use-models"
 
-type ConfigTab = "account" | "connections" | "mobile" | "models" | "mcp" | "security" | "code-mode" | "appearance" | "notifications" | "note-tagging" | "advanced" | "help"
+type ConfigTab = "account" | "connections" | "mobile" | "models" | "mcp" | "security" | "code-mode" | "appearance" | "shortcuts" | "notifications" | "permissions" | "note-tagging" | "advanced" | "help"
 
 interface TabConfig {
   id: ConfigTab
@@ -99,10 +102,22 @@ const tabs: TabConfig[] = [
     description: "Customize the look and feel",
   },
   {
+    id: "shortcuts",
+    label: "Shortcuts",
+    icon: Keyboard,
+    description: "Customize keyboard shortcuts",
+  },
+  {
     id: "notifications",
     label: "Notifications",
     icon: Bell,
     description: "Choose which notifications you receive",
+  },
+  {
+    id: "permissions",
+    label: "Permissions",
+    icon: ShieldCheck,
+    description: "What Rowboat can access, and how to grant it",
   },
   {
     id: "note-tagging",
@@ -129,7 +144,7 @@ const tabs: TabConfig[] = [
 const NAV_SECTIONS: { label: string | null; ids: ConfigTab[] }[] = [
   { label: null, ids: ["account", "connections", "mobile"] },
   { label: "Configure", ids: ["models", "mcp", "security", "code-mode", "note-tagging", "advanced"] },
-  { label: "App", ids: ["appearance", "notifications", "help"] },
+  { label: "App", ids: ["appearance", "shortcuts", "notifications", "permissions", "help"] },
 ]
 
 interface SettingsDialogProps {
@@ -1143,6 +1158,14 @@ function NoteTaggingSettings({ dialogOpen }: { dialogOpen: boolean }) {
 
 // --- Code Mode Settings ---
 
+// Human label for the raw subscription tier the engine reports
+// (claude: "max" / "pro" / "enterprise"; codex: ChatGPT plan types like "go" / "plus").
+function formatPlan(agent: 'claude' | 'codex', plan: string | undefined): string | null {
+  if (!plan) return null
+  const cap = plan.charAt(0).toUpperCase() + plan.slice(1)
+  return agent === 'codex' ? `ChatGPT ${cap}` : cap
+}
+
 function AgentStatusRow({
   name,
   agent,
@@ -1163,50 +1186,63 @@ function AgentStatusRow({
 
   // Treat a just-enabled engine as installed even before the status refresh lands.
   const installed = (status?.installed ?? false) || enabledOptimistic.has(agent)
-  const ready = installed && status?.signedIn
+  const signedIn = status?.signedIn ?? false
+  const email = status?.account?.email
+  const plan = formatPlan(agent, status?.account?.plan)
+  const active = installed && signedIn
   return (
-    <div className="rounded-md border px-3 py-2.5 flex items-center gap-3">
+    <div className="flex items-center gap-3 rounded-md border px-3 py-2.5">
       {agent === 'claude' ? (
         <AnthropicIcon className="size-5 shrink-0" />
       ) : (
         <OpenAIIcon className="size-5 shrink-0" />
       )}
-      <div className="flex-1 min-w-0">
-        <div className="text-sm font-medium">{name}</div>
-        <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-3">
-          <span className={cn("inline-flex items-center gap-1", installed ? "text-green-600" : "text-muted-foreground")}>
-            {installed ? <CheckCircle2 className="size-3" /> : <X className="size-3" />}
-            {installed ? 'Engine ready' : 'Not enabled'}
-          </span>
-          <span className={cn("inline-flex items-center gap-1", status?.signedIn ? "text-green-600" : "text-muted-foreground")}>
-            {status?.signedIn ? <CheckCircle2 className="size-3" /> : <X className="size-3" />}
-            Signed in
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium">{name}</span>
+          {signedIn && plan && (
+            <span className="rounded-full border px-1.5 py-px text-[10px] font-medium leading-4 text-muted-foreground shrink-0">
+              {plan}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground mt-0.5">
+          <span
+            className={cn(
+              "size-2 rounded-full shrink-0",
+              active ? "bg-green-500" : installed ? "bg-amber-500" : "bg-muted-foreground/30",
+            )}
+          />
+          <span className="truncate">
+            {provisioning ? (
+              'Downloading engine…'
+            ) : active ? (
+              <>Active{email ? ` · ${email}` : ''}</>
+            ) : installed ? (
+              <>
+                Run{' '}
+                <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px] text-foreground">{signInCommand}</code>{' '}
+                in your terminal, then Re-check
+              </>
+            ) : email ? (
+              `${email} · engine not enabled`
+            ) : (
+              'Not enabled'
+            )}
           </span>
         </div>
-        {error && <div className="text-xs text-red-600 mt-1 break-words">{error}</div>}
+        {error && <div className="text-xs text-destructive mt-1 break-words">{error}</div>}
       </div>
       {provisioning ? (
         <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground shrink-0 tabular-nums">
           <Loader2 className="size-3 animate-spin" />
           {prov?.pct != null ? `${prov.pct}%` : null}
         </span>
-      ) : ready ? (
-        <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-[10px] font-medium leading-none text-green-600">
-          Ready
-        </span>
       ) : !installed ? (
-        <button
-          type="button"
-          onClick={enable}
-          className="rounded-full bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:opacity-90 shrink-0"
-        >
+        <Button variant="outline" size="sm" onClick={enable} className="shrink-0">
           Enable
-        </button>
-      ) : (
-        <span className="text-xs text-muted-foreground shrink-0">
-          Run <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px] text-foreground">{signInCommand}</code>
-        </span>
-      )}
+        </Button>
+      ) : null}
     </div>
   )
 }
@@ -1214,6 +1250,10 @@ function AgentStatusRow({
 function CodeModeSettings({ dialogOpen }: { dialogOpen: boolean }) {
   const [enabled, setEnabled] = useState(false)
   const [approvalPolicy, setApprovalPolicy] = useState<ApprovalPolicy>('ask')
+  // The repo coding work defaults into when none is named. undefined = Auto:
+  // a single registered project is the implicit default.
+  const [defaultProjectId, setDefaultProjectId] = useState<string | undefined>(undefined)
+  const [projects, setProjects] = useState<{ id: string; name: string; path: string }[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState<CodeModeAgentStatus | null>(null)
@@ -1241,9 +1281,16 @@ function CodeModeSettings({ dialogOpen }: { dialogOpen: boolean }) {
         if (!cancelled) {
           setEnabled(result.enabled)
           setApprovalPolicy(result.approvalPolicy ?? 'ask')
+          setDefaultProjectId(result.defaultProjectId)
         }
       } catch {
         if (!cancelled) setEnabled(false)
+      }
+      try {
+        const res = await window.ipc.invoke("codeProject:list", null)
+        if (!cancelled) setProjects(res.projects.map((p) => ({ id: p.project.id, name: p.project.name, path: p.project.path })))
+      } catch {
+        if (!cancelled) setProjects([])
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -1257,7 +1304,7 @@ function CodeModeSettings({ dialogOpen }: { dialogOpen: boolean }) {
     setSaving(true)
     setEnabled(next)
     try {
-      await window.ipc.invoke("codeMode:setConfig", { enabled: next, approvalPolicy })
+      await window.ipc.invoke("codeMode:setConfig", { enabled: next, approvalPolicy, defaultProjectId })
       window.dispatchEvent(new Event("code-mode-config-changed"))
       toast.success(next ? "Code mode enabled" : "Code mode disabled")
     } catch {
@@ -1266,14 +1313,14 @@ function CodeModeSettings({ dialogOpen }: { dialogOpen: boolean }) {
     } finally {
       setSaving(false)
     }
-  }, [approvalPolicy])
+  }, [approvalPolicy, defaultProjectId])
 
   const handlePolicyChange = useCallback(async (next: ApprovalPolicy) => {
     const prev = approvalPolicy
     setSaving(true)
     setApprovalPolicy(next)
     try {
-      await window.ipc.invoke("codeMode:setConfig", { enabled, approvalPolicy: next })
+      await window.ipc.invoke("codeMode:setConfig", { enabled, approvalPolicy: next, defaultProjectId })
       window.dispatchEvent(new Event("code-mode-config-changed"))
     } catch {
       setApprovalPolicy(prev)
@@ -1281,7 +1328,22 @@ function CodeModeSettings({ dialogOpen }: { dialogOpen: boolean }) {
     } finally {
       setSaving(false)
     }
-  }, [enabled, approvalPolicy])
+  }, [enabled, approvalPolicy, defaultProjectId])
+
+  const handleDefaultRepoChange = useCallback(async (next: string | undefined) => {
+    const prev = defaultProjectId
+    setSaving(true)
+    setDefaultProjectId(next)
+    try {
+      await window.ipc.invoke("codeMode:setConfig", { enabled, approvalPolicy, defaultProjectId: next })
+      window.dispatchEvent(new Event("code-mode-config-changed"))
+    } catch {
+      setDefaultProjectId(prev)
+      toast.error("Failed to update the default repo")
+    } finally {
+      setSaving(false)
+    }
+  }, [enabled, approvalPolicy, defaultProjectId])
 
   const anyReady = status?.claude.installed && status?.claude.signedIn
     || status?.codex.installed && status?.codex.signedIn
@@ -1299,22 +1361,18 @@ function CodeModeSettings({ dialogOpen }: { dialogOpen: boolean }) {
     <div className="space-y-5">
       <div className="space-y-2 text-sm text-muted-foreground leading-relaxed">
         <p>
-          <strong className="text-foreground">Code mode</strong> lets the assistant delegate coding tasks
-          to <strong className="text-foreground">Claude Code</strong> or <strong className="text-foreground">Codex</strong> running
-          on your machine. Pick the agent inline from the composer; the assistant runs it on-device
-          and streams its work — tool calls, file diffs, and approvals — back into chat.
+          <strong className="text-foreground">Code mode</strong> lets the assistant hand coding tasks
+          to <strong className="text-foreground">Claude Code</strong> or <strong className="text-foreground">Codex</strong> on
+          your machine. Pick the agent in the composer, and everything it does — commands, file
+          changes, approvals — shows up in the chat.
         </p>
         <p>
-          Requires an active <strong className="text-foreground">Claude Code</strong> subscription or
-          a <strong className="text-foreground">ChatGPT/Codex</strong> subscription. You can have one or both.
-        </p>
-        <p>
-          For each agent you want to use, you must have it{' '}
-          <strong className="text-foreground">installed and logged in</strong> on this machine: click{' '}
-          <strong className="text-foreground">Enable</strong> below to download its engine, and sign in by
-          running <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px] text-foreground">claude login</code>{' '}
+          To set up an agent, click <strong className="text-foreground">Enable</strong> below to download
+          it, then sign in by running{' '}
+          <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px] text-foreground">claude login</code>{' '}
           or <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px] text-foreground">codex login</code>{' '}
-          in your terminal. Code mode uses that saved login.
+          in your terminal. You need a <strong className="text-foreground">Claude</strong> or{' '}
+          <strong className="text-foreground">ChatGPT</strong> subscription — either one works, or both.
         </p>
       </div>
 
@@ -1391,6 +1449,49 @@ function CodeModeSettings({ dialogOpen }: { dialogOpen: boolean }) {
         </div>
       )}
 
+      {enabled && (
+        <div className="rounded-md border px-3 py-3 space-y-2">
+          <div className="text-sm font-medium">Default repo</div>
+          <div className="text-xs text-muted-foreground">
+            Where coding work lands when you don&apos;t name a folder — say &quot;fix the login bug&quot; anywhere
+            (Home, chat, voice) and it runs here on its own isolated branch. Repos are registered in the Code section.
+          </div>
+          <Select
+            value={defaultProjectId ?? 'auto'}
+            onValueChange={(v) => handleDefaultRepoChange(v === 'auto' ? undefined : v)}
+            disabled={saving || projects.length === 0}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="auto">
+                {projects.length === 1 ? `Auto — ${projects[0].name} (only repo)` : 'Auto — the only registered repo'}
+              </SelectItem>
+              {projects.map((p) => (
+                <SelectItem key={p.id} value={p.id}>
+                  {p.name}
+                  {/* Same-named repos elsewhere — say where this one lives. */}
+                  {projects.some((o) => o.id !== p.id && o.name === p.name) && (
+                    <span className="ml-1.5 text-muted-foreground">{compactPath(parentPath(p.path), 24)}</span>
+                  )}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {projects.length === 0 && (
+            <div className="text-xs text-muted-foreground">
+              No repos registered yet — add one in the Code section first.
+            </div>
+          )}
+          {projects.length > 1 && !defaultProjectId && (
+            <div className="text-xs text-muted-foreground">
+              Several repos are registered — pick one, or unnamed coding requests will ask.
+            </div>
+          )}
+        </div>
+      )}
+
       {enabled && status && !anyReady && (
         <div className="rounded-md border border-amber-500/40 bg-amber-50/60 dark:bg-amber-950/20 px-3 py-2.5 flex items-start gap-2 text-xs">
           <AlertTriangle className="size-4 text-amber-600 dark:text-amber-500 shrink-0 mt-0.5" />
@@ -1406,9 +1507,9 @@ function CodeModeSettings({ dialogOpen }: { dialogOpen: boolean }) {
 
 // --- Notification Settings ---
 
-type NotificationCategoryKey = "chat_completion" | "new_email" | "agent_permission" | "background_task" | "meeting_detection" | "meeting_notes_ready"
+type NotificationCategoryKey = "chat_completion" | "new_email" | "agent_permission" | "background_task" | "todo" | "meeting_detection" | "meeting_notes_ready" | "space_mention"
 
-const NOTIFICATION_CATEGORIES: { key: NotificationCategoryKey; label: string; description: string }[] = [
+const ALL_NOTIFICATION_CATEGORIES: { key: NotificationCategoryKey; label: string; description: string }[] = [
   {
     key: "chat_completion",
     label: "Chat responses",
@@ -1430,6 +1531,11 @@ const NOTIFICATION_CATEGORIES: { key: NotificationCategoryKey; label: string; de
     description: "When a background agent you've set up has something to surface. Click to open it on the background tasks page.",
   },
   {
+    key: "todo",
+    label: "To-do list",
+    description: "When a to-do you delegated finishes or has something ready for review. Click to open Home.",
+  },
+  {
     key: "meeting_detection",
     label: "Meeting detection",
     description: "A popup offering to take notes when Rowboat notices you're in a call or meeting. Nothing records until you accept.",
@@ -1439,7 +1545,16 @@ const NOTIFICATION_CATEGORIES: { key: NotificationCategoryKey; label: string; de
     label: "Meeting notes ready",
     description: "When your meeting notes finish generating after a call. Click to open the note. Only shown while the app is in the background.",
   },
+  {
+    key: "space_mention",
+    label: "Space mentions",
+    description: "When a teammate @mentions you in a space. Click to open the conversation. Only shown while the app is in the background.",
+  },
 ]
+
+// With Spaces dark, its notification category stays out of the settings UI
+// (the mention watcher that emits it is gated on the same flag in main).
+const NOTIFICATION_CATEGORIES = ALL_NOTIFICATION_CATEGORIES.filter((cat) => SPACES_ENABLED || cat.key !== "space_mention")
 
 function NotificationSettings({ dialogOpen }: { dialogOpen: boolean }) {
   const [categories, setCategories] = useState<Record<NotificationCategoryKey, boolean> | null>(null)
@@ -1601,6 +1716,10 @@ function AdvancedSettings({ dialogOpen }: { dialogOpen: boolean }) {
   const [globalLimit, setGlobalLimit] = useState("")
   const [chatLimit, setChatLimit] = useState("")
   const [loaded, setLoaded] = useState(false)
+  // Storage retention (auto-delete old chats & task transcripts).
+  // chatDays null = never delete chats (transcript cleanup still runs).
+  const [retentionEnabled, setRetentionEnabled] = useState(true)
+  const [retentionChatDays, setRetentionChatDays] = useState<number | null>(60)
 
   useEffect(() => {
     if (!dialogOpen) return
@@ -1621,8 +1740,25 @@ function AdvancedSettings({ dialogOpen }: { dialogOpen: boolean }) {
       .catch(() => {
         if (!cancelled) toast.error("Failed to load advanced settings")
       })
+    window.ipc.invoke("retention:getSettings", null)
+      .then((settings) => {
+        if (cancelled) return
+        setRetentionEnabled(settings.enabled)
+        setRetentionChatDays(settings.chatDays)
+      })
+      .catch(() => {
+        if (!cancelled) toast.error("Failed to load auto-delete settings")
+      })
     return () => { cancelled = true }
   }, [dialogOpen])
+
+  const saveRetention = useCallback(async (patch: { enabled?: boolean; chatDays?: number | null }) => {
+    try {
+      await window.ipc.invoke("retention:setSettings", patch)
+    } catch {
+      toast.error("Failed to save auto-delete settings")
+    }
+  }, [])
 
   // Saves silently on success (a toast per stepper click would be noisy,
   // matching the notification toggles); errors still surface.
@@ -1728,6 +1864,56 @@ function AdvancedSettings({ dialogOpen }: { dialogOpen: boolean }) {
           </div>
         </div>
       </div>
+
+      <div className="space-y-2">
+        <div className="rounded-md border px-3 py-3 flex items-center gap-4">
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-medium">Auto-delete old chats &amp; task history</div>
+            <div className="text-xs text-muted-foreground mt-0.5">
+              Deletes chats inactive for longer than the period below, and background run
+              transcripts (note creation, background tasks, knowledge sync) older than 14 days.
+              Notes and files created by agents are never touched.
+            </div>
+          </div>
+          <Switch
+            checked={retentionEnabled}
+            onCheckedChange={(checked) => {
+              setRetentionEnabled(checked)
+              void saveRetention({ enabled: checked })
+            }}
+            aria-label="Auto-delete old chats and task history"
+          />
+        </div>
+
+        {retentionEnabled && (
+          <div className="rounded-md border px-3 py-3 flex items-center gap-4">
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium">Delete chats after</div>
+              <div className="text-xs text-muted-foreground mt-0.5">
+                Measured from the chat&apos;s last activity, not when it was created.
+              </div>
+            </div>
+            <Select
+              value={retentionChatDays === null ? "never" : String(retentionChatDays)}
+              onValueChange={(value) => {
+                const days = value === "never" ? null : Number(value)
+                setRetentionChatDays(days)
+                void saveRetention({ chatDays: days })
+              }}
+            >
+              <SelectTrigger className="w-32 shrink-0">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="30">30 days</SelectItem>
+                <SelectItem value="60">60 days</SelectItem>
+                <SelectItem value="90">90 days</SelectItem>
+                <SelectItem value="never">Never</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -1778,7 +1964,7 @@ export function SettingsDialog({ children, defaultTab = "account", open: control
   }
 
   const loadConfig = useCallback(async (tab: ConfigTab) => {
-    if (tab === "appearance" || tab === "models" || tab === "note-tagging" || tab === "account" || tab === "connections" || tab === "help" || tab === "code-mode" || tab === "notifications" || tab === "advanced") return
+    if (tab === "appearance" || tab === "shortcuts" || tab === "models" || tab === "note-tagging" || tab === "account" || tab === "connections" || tab === "help" || tab === "code-mode" || tab === "notifications" || tab === "advanced") return
     const tabConfig = tabs.find((t) => t.id === tab)!
     if (!tabConfig.path) return
     setLoading(true)
@@ -1847,7 +2033,7 @@ export function SettingsDialog({ children, defaultTab = "account", open: control
     <Dialog open={open} onOpenChange={setOpen}>
       {children && <DialogTrigger asChild>{children}</DialogTrigger>}
       <DialogContent
-        className="max-w-[900px]! w-[900px] h-[600px] p-0 gap-0 overflow-hidden"
+        className="max-w-[900px]! w-[900px] h-[660px] max-h-[85vh] p-0 gap-0 overflow-hidden"
       >
         <div className="flex h-full overflow-hidden">
           {/* Sidebar */}
@@ -1941,8 +2127,12 @@ export function SettingsDialog({ children, defaultTab = "account", open: control
                 <NoteTaggingSettings dialogOpen={open} />
               ) : activeTab === "appearance" ? (
                 <AppearanceSettings />
+              ) : activeTab === "shortcuts" ? (
+                <ShortcutSettings />
               ) : activeTab === "notifications" ? (
                 <NotificationSettings dialogOpen={open} />
+              ) : activeTab === "permissions" ? (
+                <PermissionsSettings dialogOpen={open} />
               ) : activeTab === "advanced" ? (
                 <AdvancedSettings dialogOpen={open} />
               ) : activeTab === "help" ? (

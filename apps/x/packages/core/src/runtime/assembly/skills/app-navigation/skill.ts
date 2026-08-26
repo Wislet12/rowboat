@@ -30,14 +30,15 @@ Returns the same data the view renders; the app simultaneously navigates to
 that view so the user sees it.
 
 - ` + "`view: \"email\"`" + ` → latest important inbox threads: ` + "`{ threadId, subject, from, date, unread, summary }`" + `.
-  Pass ` + "`query`" + ` to search instead. **This is a LIVE Gmail search over the
-  user's ENTIRE mailbox via the Gmail API** (not a local/semantic search) and
-  supports full Gmail search operators — ` + "`from:`, `to:`, `subject:`, `before:`/`after:`, `has:attachment`" + `,
-  quoted phrases, ` + "`OR`" + ` — e.g. ` + "`query: \"from:arjun subject:deck\"`" + ` or plain words like ` + "`\"Arjun\"`" + `.
-  When the user says "search my gmail" or wants Gmail's real search, THIS is
-  it — do not reach for any other integration. Gmail matches whole words
-  literally, so prefer broad queries (one or two distinctive words, or
-  ` + "`OR`" + ` variants like ` + "`\"intern OR internship\"`" + `) over long phrases.
+  Pass ` + "`query`" + ` to search instead. **This is a LIVE search over the
+  user's ENTIRE mailbox via the connected provider's real search** (not a
+  local/semantic search): Gmail search operators — ` + "`from:`, `to:`, `subject:`, `before:`/`after:`, `has:attachment`" + `,
+  quoted phrases, ` + "`OR`" + ` — or Outlook KQL (` + "`from:`, `subject:`, `received>=`, `hasattachment:true`" + `),
+  e.g. ` + "`query: \"from:arjun subject:deck\"`" + ` or plain words like ` + "`\"Arjun\"`" + `.
+  When the user says "search my gmail"/"search my outlook" or wants their
+  mailbox's real search, THIS is it — do not reach for any other integration.
+  Searches match whole words literally, so prefer broad queries (one or two
+  distinctive words, or ` + "`OR`" + ` variants like ` + "`\"intern OR internship\"`" + `) over long phrases.
   A ` + "`query`" + ` search also fills the email view's search box on the user's
   screen, so they see the same results — and a follow-up open-item works for
   any thread the search returned, including old threads outside the inbox.
@@ -109,6 +110,46 @@ If the data looks stale and the app has an agent, offer to run it
 Open a knowledge file in the editor. ` + "`path`" + `: full workspace-relative path
 (e.g. ` + "`knowledge/People/John Smith.md`" + `). Use ` + "`file-grep`" + ` first if unsure
 of the exact path.
+
+## Pointing at the user's shared screen (calls)
+
+While the user is SHARING THEIR SCREEN on a call you also have the
+` + "`screen-pointer`" + ` tool: it puts an animated pointer (with an optional tiny
+label) at a position on their REAL screen — like reaching over and pointing
+at their monitor. Pointing is for LOCATION, and it is OPTIONAL: use it when
+the user asks "where/which one", or when a spatial reference genuinely
+disambiguates ("this line here", "that button"). Most replies during a
+share need no pointer at all — having the tool is not an obligation to use
+it. Never point as emphasis, out of habit, or on a question that isn't
+about something visible on screen.
+
+- ` + "`screen-pointer({ action: \"point\", x, y, label? })`" + ` — ` + "`x`" + `/` + "`y`" + ` are
+  FRACTIONS 0-1 of the LATEST screen-share frame (x: 0 left → 1 right,
+  y: 0 top → 1 bottom). Estimate them from the most recent screen frame.
+- ` + "`label`" + ` is a few words at most ("weekend dip") — say the explanation out
+  loud instead of writing it into the label.
+- The pointer auto-hides after ~8s (tune with ` + "`durationMs`" + `); pointing again
+  MOVES it. ` + "`screen-pointer({ action: \"hide\" })`" + ` dismisses it early — hide
+  when you're done referring to the spot.
+- Point at ONE thing at a time, and speak while you point.
+- Only point when the target is clearly visible in the LATEST screen frame
+  and you're confident of its position. If the frame looks stale, the user
+  has switched windows or displays, or you can't locate the thing — say the
+  location in words instead. A wrong pointer (or one on the wrong screen)
+  is worse than none.
+- Only works during a live screen share; it fails with an explanation
+  otherwise (ask the user to share their screen).
+- Pointing is where your screen abilities END: you cannot click or type on
+  the user's screen. If they ask you to act there, point at the target and
+  talk them through it — or drive the embedded browser (browser-control)
+  when the task is a web page.
+
+**Worked example — "walk my post-doc through this dashboard" (screen share live):**
+1. Read the latest screen frame: the growth chart's weekend dip sits at
+   roughly 62% across, 40% down.
+2. ` + "`screen-pointer({ action: \"point\", x: 0.62, y: 0.4, label: \"weekend dip\" })`" + `
+3. Say: "This dip here is the weekend — usage recovers Monday morning."
+4. Point at the next feature as you continue, or ` + "`hide`" + ` when done.
 
 ### update-base-view / get-base-state / create-base
 Knowledge-base table control (unchanged):

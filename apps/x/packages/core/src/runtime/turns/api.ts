@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import type { TurnAnalytics } from "@x/shared/dist/analytics.js";
 import type { AssistantMessage, UserMessage } from "@x/shared/dist/message.js";
 import type {
     JsonValue,
@@ -16,6 +17,7 @@ export interface CreateTurnInput {
     sessionId?: string | null;
     context: z.infer<typeof TurnContext>;
     input: z.infer<typeof UserMessage>;
+    analytics?: TurnAnalytics;
     config: {
         autoPermission?: boolean;
         humanAvailable: boolean;
@@ -25,6 +27,19 @@ export interface CreateTurnInput {
         reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
     };
 }
+
+// Steering: a caller-supplied drain the advance polls at each model-call
+// boundary (after the tool batch settles and completion is ruled out,
+// immediately before the next model call is requested). Returned messages
+// are treated as consumed and appended durably as input_added events, so
+// they ride the very next request. The dual of the abort signal: both are
+// ephemeral per-invocation channels into a live advance that become durable
+// only when acted on. The turn layer never learns where the messages come
+// from (session queue, test fixture); an accepted input resets the
+// model-call budget.
+export type TakeAddedInputs = () =>
+    | Array<z.infer<typeof UserMessage>>
+    | Promise<Array<z.infer<typeof UserMessage>>>;
 
 // Exactly one external input per advanceTurn invocation.
 export type TurnExternalInput =
@@ -90,9 +105,13 @@ export interface ITurnRuntime {
     advanceTurn(
         turnId: string,
         input?: TurnExternalInput,
-        options?: { signal?: AbortSignal },
+        options?: { signal?: AbortSignal; takeInputs?: TakeAddedInputs },
     ): TurnExecution;
     getTurn(turnId: string): Promise<Turn>;
+    // Removes the turn's file. Idempotent — a missing turn is not an error.
+    // Callers own lifecycle safety: never delete a turn that may still be
+    // advancing (session deletion stops live advances first).
+    deleteTurn(turnId: string): Promise<void>;
 }
 
 // An external input that does not match the turn's current durable pending

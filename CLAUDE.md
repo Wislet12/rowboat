@@ -20,6 +20,7 @@ cd apps/x/apps/main && npm run make      # Create DMG distributable
 rowboat/
 ├── apps/
 │   ├── x/                 # Electron desktop app (focus of this doc)
+│   ├── harbor/            # Spaces server + protocol (own pnpm workspace)
 │   ├── rowboat/           # Next.js web dashboard
 │   ├── rowboatx/          # Next.js frontend
 │   ├── cli/               # CLI tool
@@ -111,14 +112,15 @@ Long-form docs for specific features. Read the relevant file before making chang
 | Live Notes — single `live:` frontmatter block (one objective + optional cron / windows / eventMatchCriteria) that turns a note into a self-updating artifact, panel UI, Copilot skill, prompts catalog | `apps/x/LIVE_NOTE.md` |
 | Calls (video mode) — one hands-free call engine with four presets (voice / video / share screen / practice coaching), device-derived surfaces (full-screen ⇄ floating popout), frame pipeline, prompts catalog | `apps/x/VIDEO_MODE.md` |
 | Analytics — PostHog event catalog, person properties, use-case taxonomy, how to add a new event | `apps/x/ANALYTICS.md` |
+| Spaces — wire contract (`@rowboat/spaces-protocol`), stub Harbor server, golden merge fixtures; apps/x consumes via `link:` deps (zod versions must match exactly across the two workspaces) | `apps/harbor/CONTRACT.md` |
 | Turn/session runtime — event-sourced storage, reference model, the `npm run inspect` debugger | `apps/x/packages/core/docs/turn-runtime-design.md`, `session-design.md` |
 
 ## Common Tasks
 
 ### LLM configuration
 - Config file: `~/.rowboat/config/models.json` (v2; v1 files are migrated on boot by `core/models/migrate.ts`)
-- Schema: `{ version: 2, providers: { <id>: { flavor, apiKey?, baseURL?, … } }, assistantModel?: { provider, model }, taskModels?: { knowledgeGraph?, meetingNotes?, liveNoteAgent?, autoPermissionDecision?, chatTitle? }, deferBackgroundTasks? }`
-- Providers carry credentials only (no model fields) — model lists are always fetched live via the unified catalog (`core/models/catalog.ts`, `models:list` IPC). Model choices live in `assistantModel` (the one primary) and `taskModels` (optional overrides that otherwise inherit the assistant).
+- Schema: `{ version: 2, providers: { <id>: { flavor, apiKey?, baseURL?, … } }, assistantModel?: { provider, model, effort? }, taskModels?: { knowledgeGraph?, meetingNotes?, liveNoteAgent?, autoPermissionDecision?, chatTitle?, backgroundTask?, subagent? }, deferBackgroundTasks? }`
+- Providers carry credentials only (no model fields) — model lists are always fetched live via the unified catalog (`core/models/catalog.ts`, `models:list` IPC). Model choices live in `assistantModel` (the one primary) and `taskModels` (optional overrides that otherwise inherit the assistant). Every choice is a `{ provider, model, effort? }` pair — `effort` is the reasoning effort picked with the model (`low`/`medium`/`high`; missing, `null`, or `"auto"` all mean Auto = provider default).
 - Models catalog cache: `~/.rowboat/config/models.dev.json` (OpenAI/Anthropic/Google only)
 
 ### Add a new shared type

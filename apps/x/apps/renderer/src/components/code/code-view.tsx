@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Bot, ChevronDown, ChevronUp, Code2, GitBranch, Terminal as TerminalIcon } from 'lucide-react'
+import { ChevronDown, ChevronUp, Code2, GitBranch, Terminal as TerminalIcon } from 'lucide-react'
 import type { CodeSession, CodeSessionStatus, CodeAgentModelOptions } from '@x/shared/src/code-sessions.js'
 import { fetchCodeAgentOptions, toSelectorOptions, withDefault, optionLabel } from './code-agent-options'
 import { ModelSelector } from '@/components/model-selector'
 import type { ApprovalPolicy } from '@x/shared/src/code-mode.js'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
-import { Switch } from '@/components/ui/switch'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -69,20 +68,32 @@ export interface ActiveCodeSession {
 
 // The Code section's middle pane: session rail + workspace (diffs/files).
 // The conversation lives in the RIGHT pane — the assistant chat bound to the
-// session's run when Rowboat drives, or the direct-drive chat otherwise.
-// App.tsx learns which via onSessionSelected and renders the right pane.
+// session (a code session IS a chat session). App.tsx learns which via
+// onSessionSelected and binds the right pane.
 export function CodeView({
   onSessionSelected,
   openDiffPath,
   onDiffOpened,
+  focusSessionId,
+  onFocusConsumed,
 }: {
   onSessionSelected?: (active: ActiveCodeSession | null) => void
   // A file path the chat asked to review (clicking a changed file in a tool call).
   openDiffPath?: string | null
   onDiffOpened?: () => void
+  // Deep-link from elsewhere (a Home Deck strip): select this session on
+  // mount/change instead of the remembered one.
+  focusSessionId?: string | null
+  onFocusConsumed?: () => void
 }) {
   const { projects, sessions, statusOf, refresh } = useCodeSessions()
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(readStoredSelectedSessionId)
+
+  useEffect(() => {
+    if (!focusSessionId) return
+    setSelectedSessionId(focusSessionId)
+    onFocusConsumed?.()
+  }, [focusSessionId, onFocusConsumed])
   const [newSessionProjectId, setNewSessionProjectId] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<CodeSession | null>(null)
   const [terminalOpen, setTerminalOpen] = useState(false)
@@ -180,7 +191,7 @@ export function CodeView({
     }
   }, [refresh, selectedSessionId])
 
-  const handleUpdateSession = useCallback(async (patch: { mode?: 'direct' | 'rowboat'; policy?: ApprovalPolicy; agent?: 'claude' | 'codex'; agentModel?: string; agentEffort?: string }) => {
+  const handleUpdateSession = useCallback(async (patch: { policy?: ApprovalPolicy; agent?: 'claude' | 'codex'; agentModel?: string; agentEffort?: string }) => {
     if (!selectedSessionId) return
     try {
       await window.ipc.invoke('codeSession:update', { sessionId: selectedSessionId, patch })
@@ -189,8 +200,6 @@ export function CodeView({
       toast.error(err instanceof Error ? err.message : 'Failed to update session')
     }
   }, [refresh, selectedSessionId])
-
-  const busy = selectedStatus === 'working' || selectedStatus === 'needs-you'
 
   return (
     <div className="flex h-full min-h-0">
@@ -201,7 +210,17 @@ export function CodeView({
           sessions={sessions}
           statusOf={statusOf}
           selectedSessionId={selectedSessionId}
-          onSelectSession={setSelectedSessionId}
+          onSelectSession={(id) => {
+            setSelectedSessionId(id)
+            // Re-clicking the already-selected session is a no-op for React
+            // state, but the user means "show me this session's chat" — the
+            // dock may have been rebound to another conversation meanwhile.
+            // Re-notify so App re-asserts the binding (it dedupes).
+            if (id === selectedSessionId) {
+              const session = sessions.find((s) => s.id === id)
+              if (session) onSessionSelected?.({ session, status: statusOf(session.id) })
+            }
+          }}
           onAddProject={() => void handleAddProject()}
           onRemoveProject={(id) => void handleRemoveProject(id)}
           onNewSession={setNewSessionProjectId}
@@ -267,9 +286,11 @@ export function CodeView({
                       variant="ghost"
                       size="sm"
                       className="h-7 gap-1.5 px-2 text-xs text-muted-foreground"
-                      title={POLICY_LABEL[selectedSession.policy]}
+                      title={selectedSession.policy
+                        ? POLICY_LABEL[selectedSession.policy]
+                        : 'Approvals: Auto — follows the composer chip / global setting until you pick one here'}
                     >
-                      <span className="whitespace-nowrap">{POLICY_HEADER_LABEL[selectedSession.policy]}</span>
+                      <span className="whitespace-nowrap">{selectedSession.policy ? POLICY_HEADER_LABEL[selectedSession.policy] : 'Auto'}</span>
                       <ChevronDown className="size-3" />
                     </Button>
                   </DropdownMenuTrigger>
@@ -282,15 +303,6 @@ export function CodeView({
                     ))}
                   </DropdownMenuContent>
                 </DropdownMenu>
-                <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
-                  <Bot className="size-3.5" />
-                  <span className="whitespace-nowrap">Rowboat drives</span>
-                  <Switch
-                    checked={selectedSession.mode === 'rowboat'}
-                    disabled={busy}
-                    onCheckedChange={(checked) => void handleUpdateSession({ mode: checked ? 'rowboat' : 'direct' })}
-                  />
-                </label>
               </div>
             </div>
             <div className="min-h-0 flex-1">
@@ -344,9 +356,8 @@ export function CodeView({
             <Code2 className="size-10 text-muted-foreground/40" />
             <div className="text-sm font-medium">Code with agents</div>
             <p className="max-w-sm px-6 text-xs text-muted-foreground">
-              Run Claude Code or Codex on your projects — let Rowboat drive them, or talk to them
-              directly. The conversation happens in the chat pane on the right; changes and files
-              show here.
+              Rowboat runs Claude Code or Codex on your projects. Chat on the right like any other
+              conversation — changes and files show here.
             </p>
             {projects.length === 0 ? (
               <Button size="sm" onClick={() => void handleAddProject()}>Add a project to get started</Button>

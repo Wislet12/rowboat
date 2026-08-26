@@ -19,6 +19,21 @@ export interface AppSettings {
      * account/provider behavior and is always an explicit opt-in.
      */
     rowboatExecutionAuthorityMode?: 'jarvis_oauth' | 'rowboat_hosted';
+    /**
+     * Windows only: set once the login item has been (re-)registered via the
+     * version-agnostic Squirrel stub launcher. Builds before this flag
+     * registered the versioned app-x.y.z exe, which keeps auto-starting the
+     * OLD version after every update — the first run of a newer build
+     * rewrites that registry entry in place (see apps/main/src/login_item.ts).
+     */
+    loginItemRegisteredV2?: boolean;
+    /**
+     * Custom global quick-ask chord (Electron accelerator format, e.g.
+     * "Control+Alt+K"). Absent = the default (Alt+Shift+Space). Validated
+     * against the shared chord rules on load — an invalid hand-edited value
+     * falls back to the default.
+     */
+    quickAskShortcut?: string;
 }
 
 export function loadAppSettings(): AppSettings {

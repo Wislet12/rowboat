@@ -15,14 +15,13 @@
         "make": "electron-forge make"
     },
     "dependencies": {
-        "@agentclientprotocol/claude-agent-acp": "^0.55.0",
-        "@agentclientprotocol/codex-acp": "^1.1.0",
+        "@agentclientprotocol/claude-agent-acp": "^0.67.0",
+        "@agentclientprotocol/codex-acp": "^1.2.0",
         "@x/core": "workspace:*",
         "@x/shared": "workspace:*",
         "agent-slack": "0.9.3",
         "chokidar": "^4.0.3",
         "electron-chrome-extensions": "^4.9.0",
-        "electron-liquid-glass": "^1.1.1",
         "electron-squirrel-startup": "^1.0.1",
         "html-to-docx": "^1.8.0",
         "mammoth": "^1.11.0",

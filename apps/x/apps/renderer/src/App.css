@@ -281,6 +281,31 @@
   letter-spacing: 0.08em;
 }
 
+/* Date dividers within a section (Today / Yesterday / This week / Earlier). */
+.gmail-date-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 24px 4px;
+  color: var(--gm-text-faint);
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  user-select: none;
+}
+
+.gmail-date-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--gm-border);
+}
+
+.gmail-list-header + .gmail-date-divider {
+  padding-top: 8px;
+}
+
 .gmail-section {
   display: flex;
   flex-direction: column;
@@ -698,6 +723,35 @@
   color: var(--gm-text);
   font-size: 13px;
   line-height: 1.55;
+}
+
+/* People on the thread who have a knowledge note — one click to open it. */
+.gmail-thread-people {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.gmail-thread-person {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border: 1px solid var(--gm-border);
+  border-radius: 999px;
+  background: var(--gm-bg-pill);
+  color: var(--gm-text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.gmail-thread-person:hover {
+  background: var(--gm-bg-pill-hover);
+  color: var(--gm-text-strong);
+  border-color: var(--gm-border-strong);
 }
 
 .gmail-message-stack {
@@ -1266,17 +1320,6 @@
     var(--rowboat-shadow);
 }
 
-.dark .rowboat-code-chat-input {
-  border-color: color-mix(in oklab, var(--border) 76%, transparent);
-  background: #000000;
-  box-shadow: none;
-}
-
-.dark .rowboat-code-chat-input:focus-within {
-  border-color: color-mix(in oklab, var(--ring) 70%, var(--border) 30%);
-  box-shadow: 0 0 0 1px color-mix(in oklab, var(--ring) 30%, transparent);
-}
-
 [data-slot="message-content"] {
   line-height: 1.62;
 }
@@ -1452,3 +1495,18 @@
 .bidi-auto :is(p,h1,h2,h3,h4,h5,h6,li,blockquote,td,th){unicode-bidi:plaintext;text-align:start;}
 /* Code is inherently LTR — keep it stable inside RTL messages. */
 .bidi-auto :is(pre,code,kbd,samp){direction:ltr;unicode-bidi:isolate;text-align:left;}
+
+/* Turn usage footer (token menu + effort label): hidden until the turn is
+   hovered. `*:hover + …` reveals it when the element directly above it — the
+   turn's last message — is hovered; the :has() keeps it pinned while its
+   dropdown is open. */
+[data-turn-usage] {
+  opacity: 0;
+  transition: opacity 0.15s ease-out;
+}
+[data-turn-usage]:hover,
+[data-turn-usage]:focus-within,
+[data-turn-usage]:has([data-state="open"]),
+*:hover + [data-turn-usage] {
+  opacity: 1;
+}

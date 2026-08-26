@@ -234,7 +234,7 @@ export function AppsView({ initialAppFolder, initialVersion, onNewApp, onSelecte
 
   const selected = selectedFolder ? apps.find((a) => a.folder === selectedFolder) : undefined
   if (selected) {
-    return <AppFrame app={selected} onBack={() => setSelectedFolder(null)} />
+    return <AppFrame key={selected.folder} app={selected} onBack={() => setSelectedFolder(null)} />
   }
 
   const noOwnApps = appsLoaded && apps.length === 0

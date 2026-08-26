@@ -9,6 +9,7 @@ import type {
 import type {
     CreateTurnInput,
     ITurnRuntime,
+    TakeAddedInputs,
     Turn,
     TurnExecution,
     TurnExternalInput,
@@ -59,6 +60,7 @@ function createdEvent(turnId: string, input: CreateTurnInput): TEvent {
         agent: { requested: input.agent, resolved: FIXTURE_AGENT },
         context: input.context,
         input: input.input,
+        analytics: input.analytics,
         config: {
             autoPermission: input.config.autoPermission ?? false,
             humanAvailable: input.config.humanAvailable,
@@ -183,7 +185,11 @@ type AdvanceScript = (call: {
 
 class FakeTurnRuntime implements ITurnRuntime {
     createTurnInputs: CreateTurnInput[] = [];
-    advanceCalls: Array<{ turnId: string; input?: TurnExternalInput }> = [];
+    advanceCalls: Array<{
+        turnId: string;
+        input?: TurnExternalInput;
+        takeInputs?: TakeAddedInputs;
+    }> = [];
     logs = new Map<string, TEvent[]>();
     createError?: Error;
     script?: AdvanceScript;
@@ -221,9 +227,9 @@ class FakeTurnRuntime implements ITurnRuntime {
     advanceTurn(
         turnId: string,
         input?: TurnExternalInput,
-        options?: { signal?: AbortSignal },
+        options?: { signal?: AbortSignal; takeInputs?: TakeAddedInputs },
     ): TurnExecution {
-        this.advanceCalls.push({ turnId, input });
+        this.advanceCalls.push({ turnId, input, takeInputs: options?.takeInputs });
         const stream = new HotStream<TurnStreamEvent, TurnOutcome>();
         const result = this.script?.({ turnId, input, signal: options?.signal }) ?? {
             outcome: completedOutcome(),
@@ -258,6 +264,10 @@ class FakeTurnRuntime implements ITurnRuntime {
             throw new Error(`turn not found: ${turnId}`);
         }
         return { turnId, events: structuredClone(log) };
+    }
+
+    async deleteTurn(turnId: string): Promise<void> {
+        this.logs.delete(turnId);
     }
 
     setLog(turnId: string, events: TEvent[]): void {
@@ -366,6 +376,8 @@ describe("sendMessage (13.3)", () => {
         const sessionId = await sessions.createSession();
         const { turnId } = await sessions.sendMessage(sessionId, user("Fix the bug in parser"), {
             agent: { agentId: "copilot", overrides: { model: { provider: "x", model: "y" } } },
+            useCase: "todo_item_agent",
+            subUseCase: "manual",
             autoPermission: true,
             maxModelCalls: 5,
         });
@@ -375,6 +387,10 @@ describe("sendMessage (13.3)", () => {
             sessionId,
             context: [],
             input: user("Fix the bug in parser"),
+            analytics: {
+                useCase: "todo_item_agent",
+                subUseCase: "manual",
+            },
             config: { humanAvailable: true, autoPermission: true, maxModelCalls: 5 },
         });
 
@@ -394,7 +410,9 @@ describe("sendMessage (13.3)", () => {
                 title: "Fix the bug in parser",
             }),
         );
-        expect(fake.advanceCalls).toEqual([{ turnId, input: undefined }]);
+        expect(fake.advanceCalls).toEqual([
+            { turnId, input: undefined, takeInputs: expect.any(Function) },
+        ]);
     });
 
     it("subsequent messages reference the latest turn and skip the title", async () => {
@@ -555,6 +573,7 @@ describe("external input routing (13.5)", () => {
                     decision: "allow",
                     metadata: { scope: "once" },
                 },
+                takeInputs: expect.any(Function),
             },
         ]);
     });
@@ -570,6 +589,7 @@ describe("external input routing (13.5)", () => {
                     toolCallId: "B",
                     result: { output: "the answer is 42", isError: false },
                 },
+                takeInputs: expect.any(Function),
             },
         ]);
     });
@@ -621,7 +641,11 @@ describe("stopTurn and resumeTurn", () => {
         fake.advanceCalls.length = 0;
         await sessions.stopTurn(turnId, "user stop");
         expect(fake.advanceCalls).toEqual([
-            { turnId, input: { type: "cancel", reason: "user stop" } },
+            {
+                turnId,
+                input: { type: "cancel", reason: "user stop" },
+                takeInputs: expect.any(Function),
+            },
         ]);
     });
 
@@ -634,7 +658,9 @@ describe("stopTurn and resumeTurn", () => {
         await flush();
         fake.advanceCalls.length = 0;
         await sessions.resumeTurn(sessionId);
-        expect(fake.advanceCalls).toEqual([{ turnId, input: undefined }]);
+        expect(fake.advanceCalls).toEqual([
+            { turnId, input: undefined, takeInputs: expect.any(Function) },
+        ]);
     });
 
     it("resumeTurn on a session with no turns throws", async () => {
@@ -721,7 +747,9 @@ describe("stopTurn and resumeTurn", () => {
         fake.script = () => ({
             error: new TurnInputError(`turn ${turnId} is terminal; input rejected`),
         });
-        await expect(sessions.stopTurn(turnId)).resolves.toBeUndefined();
+        await expect(sessions.stopTurn(turnId)).resolves.toEqual({
+            dequeued: [],
+        });
     });
 
     it("rethrows a cancel-input rejection when the turn is not terminal", async () => {
@@ -805,7 +833,7 @@ describe("event forwarding and index maintenance (13.6, 13.7)", () => {
         });
     });
 
-    it("deleteSession removes the file and entry; turn files stay; late settles don't resurrect", async () => {
+    it("deleteSession removes the file, entry, and turn files; live advances abort first", async () => {
         const { sessions, repo, fake, bus } = makeSessions();
         fake.script = () => ({ untilAbort: true });
         const sessionId = await sessions.createSession();
@@ -813,6 +841,8 @@ describe("event forwarding and index maintenance (13.6, 13.7)", () => {
             agent: { agentId: "copilot" },
         });
 
+        // The advance is still live (untilAbort): deleteSession aborts it,
+        // waits for it to settle, then removes both files.
         await sessions.deleteSession(sessionId);
         await expect(
             (repo as InMemorySessionRepo).read(sessionId),
@@ -823,13 +853,91 @@ describe("event forwarding and index maintenance (13.6, 13.7)", () => {
             sessionId,
             entry: null,
         });
-        // Turn file untouched (orphaned, inert).
-        expect(fake.logs.has(turnId)).toBe(true);
+        // Turn file deleted along with the session.
+        expect(fake.logs.has(turnId)).toBe(false);
 
-        // The still-running advance settles after deletion: no resurrection.
-        await sessions.stopTurn(turnId);
         await flush();
         expect(sessions.listSessions()).toEqual([]);
+    });
+
+    it("deleteSession follows sub-agent child links and deletes child turn files", async () => {
+        const { sessions, fake } = makeSessions();
+        const sessionId = await sessions.createSession();
+        const { turnId } = await sessions.sendMessage(sessionId, user("go"), {
+            agent: { agentId: "copilot" },
+        });
+        await flush();
+
+        // Seed a child turn plus the durable 'subagent' tool_progress trail
+        // spawn-agent records on the parent (model call → invocation →
+        // progress, so the reducer accepts the log).
+        const childTurnId = "2026-07-02T10-00-00Z-9999999-000";
+        fake.setLog(childTurnId, [
+            createdEvent(childTurnId, {
+                agent: { agentId: "subagent" },
+                sessionId: null,
+                context: [],
+                input: user("child task"),
+                config: { humanAvailable: false },
+            }),
+        ]);
+        const parentLog = fake.logs.get(turnId)!;
+        fake.setLog(turnId, [
+            ...parentLog,
+            {
+                type: "model_call_requested",
+                turnId,
+                ts: TS,
+                modelCallIndex: 0,
+                request: { messages: ["input"], parameters: {} },
+            },
+            {
+                type: "model_call_completed",
+                turnId,
+                ts: TS,
+                modelCallIndex: 0,
+                message: {
+                    role: "assistant",
+                    content: [
+                        {
+                            type: "tool-call",
+                            toolCallId: "tc-1",
+                            toolName: "spawn-agent",
+                            arguments: {},
+                        },
+                    ],
+                },
+                finishReason: "tool-calls",
+                usage: {},
+            },
+            {
+                type: "tool_invocation_requested",
+                turnId,
+                ts: TS,
+                toolCallId: "tc-1",
+                toolId: "tool.spawn-agent",
+                toolName: "spawn-agent",
+                execution: "sync",
+                input: {},
+            },
+            {
+                type: "tool_progress",
+                turnId,
+                ts: TS,
+                toolCallId: "tc-1",
+                source: "sync",
+                progress: {
+                    kind: "subagent",
+                    childTurnId,
+                    agentName: "subagent",
+                    task: "child task",
+                },
+            },
+        ] as TEvent[]);
+
+        await sessions.deleteSession(sessionId);
+        expect(fake.logs.has(turnId)).toBe(false);
+        expect(fake.logs.has(childTurnId)).toBe(false);
     });
 });
 
@@ -1122,5 +1230,285 @@ describe("active-skill carry-forward", () => {
         });
         const second = fake.createTurnInputs[1];
         expect(second.agent).toEqual({ agentId: "copilot" });
+    });
+});
+
+describe("pending queue (sendOrQueueMessage, steering, promotion)", () => {
+    function queueEventsOf(bus: RecordingBus) {
+        return bus.events.filter((e) => e.kind === "queue-changed");
+    }
+
+    it("starts immediately on a settled session", async () => {
+        const { sessions, fake } = makeSessions();
+        const sessionId = await sessions.createSession();
+        const result = await sessions.sendOrQueueMessage(sessionId, user("go"), {
+            agent: { agentId: "copilot" },
+        });
+        expect(result).toMatchObject({ queued: false });
+        expect(fake.createTurnInputs).toHaveLength(1);
+        expect(sessions.listQueued(sessionId)).toEqual([]);
+    });
+
+    it("queues while the latest turn is non-terminal and mirrors the queue on the bus", async () => {
+        const { sessions, fake, bus } = makeSessions();
+        // Hold the advance open: the turn is genuinely live (an idle log with
+        // no live advance would instead be reclaimed as crash-orphaned).
+        fake.script = () => ({
+            pending: new Promise<TurnOutcome>(() => undefined),
+        });
+        const sessionId = await sessions.createSession();
+        await sessions.sendMessage(sessionId, user("one"), {
+            agent: { agentId: "copilot" },
+        });
+
+        const result = await sessions.sendOrQueueMessage(sessionId, user("two"), {
+            agent: { agentId: "copilot" },
+        });
+        expect(result).toMatchObject({ queued: true });
+        expect(fake.createTurnInputs).toHaveLength(1); // no second turn
+        const queued = sessions.listQueued(sessionId);
+        expect(queued).toHaveLength(1);
+        expect(queued[0].message).toEqual(user("two"));
+        const mirrored = queueEventsOf(bus);
+        expect(mirrored[mirrored.length - 1]).toMatchObject({
+            sessionId,
+            queue: [expect.objectContaining({ message: user("two") })],
+        });
+    });
+
+    it("reclaims a crash-orphaned turn: cancels it and starts the new turn", async () => {
+        const { sessions, fake } = makeSessions();
+        const sessionId = await sessions.createSession();
+        const { turnId } = await sessions.sendMessage(sessionId, user("one"), {
+            agent: { agentId: "copilot" },
+        });
+        // The advance settled without a terminal event ever landing in the
+        // log — exactly what a dead process leaves behind: an idle log and
+        // no live advance.
+        await flush();
+
+        fake.script = ({ turnId: t, input }) => {
+            if (input?.type === "cancel") {
+                fake.setLog(t, [
+                    ...turnLog(t, sessionId, "idle"),
+                    { type: "turn_cancelled", turnId: t, ts: TS, reason: input.reason, usage: {} },
+                ]);
+                return { outcome: { status: "cancelled", usage: {} } };
+            }
+            return { outcome: completedOutcome() };
+        };
+        const result = await sessions.sendOrQueueMessage(sessionId, user("two"), {
+            agent: { agentId: "copilot" },
+        });
+
+        expect(result).toMatchObject({ queued: false });
+        const cancel = fake.advanceCalls.find((c) => c.input?.type === "cancel");
+        expect(cancel).toMatchObject({
+            turnId,
+            input: { type: "cancel", reason: expect.stringContaining("interrupted") },
+        });
+        // The new turn chains onto the cancelled ghost; nothing stays queued.
+        expect(fake.createTurnInputs).toHaveLength(2);
+        expect(fake.createTurnInputs[1]).toMatchObject({
+            input: user("two"),
+            context: { previousTurnId: turnId },
+        });
+        expect(sessions.listQueued(sessionId)).toEqual([]);
+    });
+
+    it("does not reclaim a suspended turn — permission/async-tool waits still queue", async () => {
+        const { sessions, fake } = makeSessions();
+        const sessionId = await sessions.createSession();
+        const { turnId } = await sessions.sendMessage(sessionId, user("one"), {
+            agent: { agentId: "copilot" },
+        });
+        await flush();
+        fake.setLog(turnId, turnLog(turnId, sessionId, "suspended"));
+
+        const result = await sessions.sendOrQueueMessage(sessionId, user("two"), {
+            agent: { agentId: "copilot" },
+        });
+
+        expect(result).toMatchObject({ queued: true });
+        expect(fake.advanceCalls.filter((c) => c.input?.type === "cancel")).toHaveLength(0);
+        expect(fake.createTurnInputs).toHaveLength(1);
+    });
+
+    it("hands the pending queue to every session advance as a steer source", async () => {
+        const { sessions, fake } = makeSessions();
+        fake.script = () => ({
+            pending: new Promise<TurnOutcome>(() => undefined),
+        });
+        const sessionId = await sessions.createSession();
+        await sessions.sendMessage(sessionId, user("one"), {
+            agent: { agentId: "copilot" },
+        });
+        await sessions.sendOrQueueMessage(sessionId, user("steer me in"), {
+            agent: { agentId: "copilot" },
+        });
+
+        const takeInputs = fake.advanceCalls[0].takeInputs;
+        expect(takeInputs).toBeDefined();
+        // The loop draining the source consumes the queue.
+        expect(await takeInputs!()).toEqual([user("steer me in")]);
+        expect(sessions.listQueued(sessionId)).toEqual([]);
+        // A second drain finds nothing.
+        expect(await takeInputs!()).toEqual([]);
+    });
+
+    it("promotes the pending head into a new turn when the running turn settles", async () => {
+        const { sessions, fake } = makeSessions();
+        let settle!: (outcome: TurnOutcome) => void;
+        fake.script = () => ({
+            pending: new Promise<TurnOutcome>((resolve) => {
+                settle = resolve;
+            }),
+        });
+        const sessionId = await sessions.createSession();
+        const { turnId } = await sessions.sendMessage(sessionId, user("one"), {
+            agent: { agentId: "copilot" },
+        });
+        await sessions.sendOrQueueMessage(sessionId, user("after you finish"), {
+            agent: { agentId: "copilot" },
+            useCase: "todo_item_agent",
+        });
+        expect(sessions.listQueued(sessionId)).toHaveLength(1);
+
+        fake.script = undefined; // the promoted turn settles synchronously
+        fake.setLog(turnId, turnLog(turnId, sessionId, "completed"));
+        settle(completedOutcome());
+        await flush();
+        await flush();
+
+        expect(sessions.listQueued(sessionId)).toEqual([]);
+        expect(fake.createTurnInputs).toHaveLength(2);
+        expect(fake.createTurnInputs[1]).toMatchObject({
+            input: user("after you finish"),
+            context: { previousTurnId: turnId },
+            analytics: { useCase: "todo_item_agent" },
+        });
+    });
+
+    it("queues behind existing entries even when the session is settled, preserving arrival order", async () => {
+        const { sessions, fake } = makeSessions();
+        let settle!: (outcome: TurnOutcome) => void;
+        fake.script = () => ({
+            pending: new Promise<TurnOutcome>((resolve) => {
+                settle = resolve;
+            }),
+        });
+        const sessionId = await sessions.createSession();
+        const { turnId } = await sessions.sendMessage(sessionId, user("one"), {
+            agent: { agentId: "copilot" },
+        });
+        await sessions.sendOrQueueMessage(sessionId, user("second"), {
+            agent: { agentId: "copilot" },
+        });
+        // The turn settles, but promotion has not run yet (its lock acquisition
+        // is queued); a new send must not jump the pending entry.
+        fake.setLog(turnId, turnLog(turnId, sessionId, "completed"));
+        const third = await sessions.sendOrQueueMessage(sessionId, user("third"), {
+            agent: { agentId: "copilot" },
+        });
+        expect(third).toMatchObject({ queued: true });
+        expect(
+            sessions.listQueued(sessionId).map((q) => q.message),
+        ).toEqual([user("second"), user("third")]);
+        fake.script = undefined;
+        settle(completedOutcome());
+        await flush();
+        await flush();
+        // Promotion started the head; the rest stays queued for steering.
+        expect(fake.createTurnInputs[1]).toMatchObject({ input: user("second") });
+        expect(
+            sessions.listQueued(sessionId).map((q) => q.message),
+        ).toEqual([user("third")]);
+    });
+
+    it("edits and removes pending entries before delivery", async () => {
+        const { sessions } = makeSessions();
+        const sessionId = await sessions.createSession();
+        await sessions.sendMessage(sessionId, user("one"), {
+            agent: { agentId: "copilot" },
+        });
+        const a = await sessions.sendOrQueueMessage(sessionId, user("a"), {
+            agent: { agentId: "copilot" },
+        });
+        const b = await sessions.sendOrQueueMessage(sessionId, user("b"), {
+            agent: { agentId: "copilot" },
+        });
+        if (!a.queued || !b.queued) throw new Error("expected queued");
+
+        sessions.editQueued(sessionId, a.queueId, user("a, but sharper"));
+        expect(sessions.listQueued(sessionId)[0].message).toEqual(
+            user("a, but sharper"),
+        );
+        expect(() =>
+            sessions.editQueued(sessionId, "nope", user("x")),
+        ).toThrowError(/no queued message/);
+
+        const removed = sessions.removeQueued(sessionId, b.queueId);
+        expect(removed?.message).toEqual(user("b"));
+        expect(sessions.removeQueued(sessionId, b.queueId)).toBeUndefined();
+        expect(sessions.listQueued(sessionId)).toHaveLength(1);
+    });
+
+    it("stopTurn drains the queue first and returns the text; nothing auto-starts after", async () => {
+        const { sessions, fake } = makeSessions();
+        fake.script = () => ({ untilAbort: true });
+        const sessionId = await sessions.createSession();
+        const { turnId } = await sessions.sendMessage(sessionId, user("one"), {
+            agent: { agentId: "copilot" },
+        });
+        await sessions.sendOrQueueMessage(sessionId, user("queued text"), {
+            agent: { agentId: "copilot" },
+        });
+
+        fake.setLog(turnId, turnLog(turnId, sessionId, "cancelled"));
+        const { dequeued } = await sessions.stopTurn(turnId);
+        expect(dequeued.map((q) => q.message)).toEqual([user("queued text")]);
+        expect(sessions.listQueued(sessionId)).toEqual([]);
+        await flush();
+        await flush();
+        expect(fake.createTurnInputs).toHaveLength(1); // no promotion fired
+    });
+
+    it("keeps the entry queued when promotion fails to create the turn", async () => {
+        const { sessions, fake } = makeSessions();
+        let settle!: (outcome: TurnOutcome) => void;
+        fake.script = () => ({
+            pending: new Promise<TurnOutcome>((resolve) => {
+                settle = resolve;
+            }),
+        });
+        const sessionId = await sessions.createSession();
+        const { turnId } = await sessions.sendMessage(sessionId, user("one"), {
+            agent: { agentId: "copilot" },
+        });
+        await sessions.sendOrQueueMessage(sessionId, user("stranded?"), {
+            agent: { agentId: "copilot" },
+        });
+
+        fake.setLog(turnId, turnLog(turnId, sessionId, "completed"));
+        fake.createError = new Error("model not configured");
+        settle(completedOutcome());
+        await flush();
+        await flush();
+        // Still visible and editable rather than silently dropped.
+        expect(sessions.listQueued(sessionId)).toHaveLength(1);
+    });
+
+    it("deleteSession drops the pending queue", async () => {
+        const { sessions, fake } = makeSessions();
+        fake.script = () => ({ untilAbort: true });
+        const sessionId = await sessions.createSession();
+        await sessions.sendMessage(sessionId, user("one"), {
+            agent: { agentId: "copilot" },
+        });
+        await sessions.sendOrQueueMessage(sessionId, user("bye"), {
+            agent: { agentId: "copilot" },
+        });
+        await sessions.deleteSession(sessionId);
+        expect(sessions.listQueued(sessionId)).toEqual([]);
     });
 });

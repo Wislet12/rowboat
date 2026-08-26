@@ -23,6 +23,15 @@ export async function isCodeModeAvailable(): Promise<boolean> {
     }
 }
 
+export async function isSpacesAvailable(): Promise<boolean> {
+    try {
+        const { listOrgs } = await import("../../spaces/orgs.js");
+        return listOrgs().length > 0;
+    } catch {
+        return false;
+    }
+}
+
 export async function isSlackAvailable(): Promise<boolean> {
     try {
         const repo = await lazyResolve<import("../../slack/repo.js").ISlackConfigRepo>("slackConfigRepo");
@@ -33,12 +42,8 @@ export async function isSlackAvailable(): Promise<boolean> {
     }
 }
 
-export async function isGoogleConnected(): Promise<boolean> {
-    try {
-        const repo = await lazyResolve<import("../../auth/repo.js").IOAuthRepo>("oauthRepo");
-        const connection = await repo.read("google");
-        return !!connection.tokens;
-    } catch {
-        return false;
-    }
-}
+// The email fact lives with the email code — knowledge/email/active-provider.ts
+// is the single source of "which mailbox is connected" (also consumed by the
+// email dispatcher and the main-process OAuth handler). Re-exported here so
+// assembly keeps one import home for connection facts.
+export { getActiveEmailProviderId } from "../../knowledge/email/active-provider.js";

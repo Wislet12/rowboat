@@ -1,11 +1,12 @@
 import fs from 'fs';
 import path from 'path';
 import { z } from 'zod';
-import { google } from 'googleapis';
 import type { OAuth2Client } from 'google-auth-library';
+import { GoogleClientFactory } from './google-client-factory.js';
 import { WorkDir } from '../config/config.js';
 import { createLanguageModel } from '../models/models.js';
 import { generateObjectSafe } from '../models/structured.js';
+import { directCallReasoningOptions } from '../models/reasoning.js';
 import {
     getKgModel,
     resolveProviderConfig,
@@ -91,7 +92,7 @@ let cachedUserEmail: string | null = null;
 export async function getUserEmail(auth: OAuth2Client): Promise<string | null> {
     if (cachedUserEmail) return cachedUserEmail;
     try {
-        const gmailClient = google.gmail({ version: 'v1', auth });
+        const gmailClient = GoogleClientFactory.gmailClient(auth);
         const res = await gmailClient.users.getProfile({ userId: 'me' });
         if (res.data.emailAddress) {
             cachedUserEmail = res.data.emailAddress.toLowerCase();
@@ -299,9 +300,10 @@ export async function classifyThread(
         // (no-ops unless enough new corrections exist).
         await maybeDistillImportanceRules();
 
-        const { model: modelId, provider } = await getKgModel();
+        const { model: modelId, provider, effort } = await getKgModel();
         const config = await resolveProviderConfig(provider);
         const model = createLanguageModel(config, modelId);
+        const reasoning = await directCallReasoningOptions(config.flavor, modelId, effort);
 
         // Assembled fresh per call so labels the user just defined apply to
         // the very next classification (the registry read is mtime-cached).
@@ -335,6 +337,7 @@ export async function classifyThread(
             prompt: buildPrompt(snapshot, userEmail, styleGuide, calendar),
             schema: buildClassificationSchema(labels.map((l) => l.id)),
             retry: true,
+            generateOptions: reasoning,
         }));
 
         captureLlmUsage({

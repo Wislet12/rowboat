@@ -135,8 +135,13 @@ function startAttempt(purpose: 'text' | 'realtime_voice'): ActiveAttempt {
     ? beginRealtimeChatGPTAuthorization()
     : 0;
 
-  // Close the listening socket AND any keep-alive connections (the browser
-  // holds one open after the callback response) so 1455 frees immediately.
+  // Close the listening socket AND any idle sockets (browser preconnects
+  // that never carried a request) so 1455 frees promptly. Idle-only: finish()
+  // runs from inside onCallback, BEFORE auth-server has flushed the response
+  // page for the in-flight request — closeAllConnections here would destroy
+  // that socket and the browser would show a connection error instead of the
+  // result page. Served sockets can't linger anyway: auth-server stamps
+  // Connection: close on every response.
   const closeServer = (): Promise<void> => {
     if (serverClosed) return serverClosed;
     const s = server;
@@ -145,7 +150,11 @@ function startAttempt(purpose: 'text' | 'realtime_voice'): ActiveAttempt {
       ? Promise.resolve()
       : new Promise<void>((resolve) => {
           s.close(() => resolve());
-          s.closeAllConnections();
+          s.closeIdleConnections();
+          // Preconnect sockets that never carried a request survive
+          // closeIdleConnections; destroy stragglers once the in-flight
+          // response has flushed.
+          setTimeout(() => s.closeAllConnections(), 5000).unref();
         });
     return serverClosed;
   };

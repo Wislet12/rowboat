@@ -65,8 +65,19 @@ export async function search(
   return { results };
 }
 
+// Extensions surfaced by knowledge search beyond markdown. Binary formats
+// (.xlsx/.xls) are filename-only; csv/tsv are plain text so grep covers them.
+const SPREADSHEET_EXTS = ['.xlsx', '.xls', '.csv', '.tsv'];
+const TEXT_CONTENT_GLOBS = ['*.md', '*.csv', '*.tsv'];
+
+/** Display title for a knowledge file: notes drop .md, other files keep their extension. */
+function knowledgeTitle(file: string): string {
+  const base = path.basename(file);
+  return base.toLowerCase().endsWith('.md') ? base.slice(0, -3) : base;
+}
+
 /**
- * Search knowledge markdown files by content and filename.
+ * Search knowledge files (markdown + spreadsheets) by content and filename.
  */
 async function searchKnowledge(query: string, limit: number, options: SearchOptions): Promise<SearchResult[]> {
   const searchRoot = options.knowledgeScope === 'meetings'
@@ -82,7 +93,7 @@ async function searchKnowledge(query: string, limit: number, options: SearchOpti
 
   // Content search via grep
   try {
-    const grepMatches = await grepFiles(query, searchRoot, '*.md');
+    const grepMatches = await grepFiles(query, searchRoot, TEXT_CONTENT_GLOBS);
     for (const match of grepMatches) {
       if (results.length >= limit) break;
       const relPath = path.relative(WorkDir, match.file).replace(/\\/g, '/');
@@ -90,10 +101,9 @@ async function searchKnowledge(query: string, limit: number, options: SearchOpti
       if (seenPaths.has(relPath)) continue;
       seenPaths.add(relPath);
 
-      const title = path.basename(match.file, '.md');
       results.push({
         type: 'knowledge',
-        title,
+        title: knowledgeTitle(match.file),
         preview: match.line.trim().substring(0, 150),
         path: relPath,
       });
@@ -104,20 +114,24 @@ async function searchKnowledge(query: string, limit: number, options: SearchOpti
 
   // Filename search — check files whose name matches the query
   try {
-    const allFiles = await listMarkdownFiles(searchRoot);
+    const allFiles = await listKnowledgeFiles(searchRoot);
     for (const file of allFiles) {
       if (results.length >= limit) break;
       const relPath = path.relative(WorkDir, file).replace(/\\/g, '/');
       if (!await canAccessKnowledgeResult(relPath, options)) continue;
       if (seenPaths.has(relPath)) continue;
 
-      const basename = path.basename(file, '.md');
-      if (basename.toLowerCase().includes(lowerQuery)) {
+      const title = knowledgeTitle(file);
+      if (title.toLowerCase().includes(lowerQuery)) {
         seenPaths.add(relPath);
-        const preview = await readFirstLines(file, 2);
+        const lower = file.toLowerCase();
+        // xlsx/xls are zip archives — reading "first lines" yields garbage
+        const preview = lower.endsWith('.xlsx') || lower.endsWith('.xls')
+          ? 'Spreadsheet'
+          : await readFirstLines(file, 2);
         results.push({
           type: 'knowledge',
-          title: basename,
+          title,
           preview,
           path: relPath,
         });
@@ -212,11 +226,12 @@ async function searchChats(query: string, limit: number, sessions: ChatSessionMe
 /**
  * Use grep to find files matching a query.
  */
-function grepFiles(query: string, dir: string, includeGlob: string): Promise<Array<{ file: string; line: string }>> {
+function grepFiles(query: string, dir: string, includeGlobs: string | string[]): Promise<Array<{ file: string; line: string }>> {
+  const globs = Array.isArray(includeGlobs) ? includeGlobs : [includeGlobs];
   return new Promise((resolve, reject) => {
     execFile(
       'grep',
-      ['-ril', '--include=' + includeGlob, query, dir],
+      ['-ril', ...globs.map((g) => '--include=' + g), query, dir],
       { maxBuffer: 1024 * 1024 },
       (error, stdout) => {
         if (error) {
@@ -329,19 +344,22 @@ function extractPreview(line: string, lowerQuery: string): string {
 }
 
 /**
- * Recursively list all .md files in a directory.
+ * Recursively list all searchable knowledge files (.md + spreadsheets) in a directory.
  */
-async function listMarkdownFiles(dir: string): Promise<string[]> {
+async function listKnowledgeFiles(dir: string): Promise<string[]> {
   const results: string[] = [];
   try {
     const entries = await fsp.readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        const nested = await listMarkdownFiles(fullPath);
+        const nested = await listKnowledgeFiles(fullPath);
         results.push(...nested);
-      } else if (entry.isFile() && entry.name.endsWith('.md')) {
-        results.push(fullPath);
+      } else if (entry.isFile()) {
+        const lower = entry.name.toLowerCase();
+        if (lower.endsWith('.md') || SPREADSHEET_EXTS.some((ext) => lower.endsWith(ext))) {
+          results.push(fullPath);
+        }
       }
     }
   } catch {

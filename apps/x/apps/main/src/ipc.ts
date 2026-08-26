@@ -1,8 +1,7 @@
-import { ipcMain, BrowserWindow, shell, dialog, systemPreferences, desktopCapturer, app, screen, powerSaveBlocker } from 'electron';
+import { ipcMain, BrowserWindow, shell, dialog, systemPreferences, desktopCapturer, app, powerSaveBlocker } from 'electron';
 import { ipc } from '@x/shared';
 import path from 'node:path';
 import os from 'node:os';
-import { fileURLToPath } from 'node:url';
 import {
   connectProvider,
   disconnectProvider,
@@ -27,7 +26,27 @@ const execFileAsync = promisify(execFile);
 let caffeinateBlockerId: number | null = null;
 
 import { initPtt, setPttActive, getPttStatus, retryPttHook, openInputMonitoringSettings } from './ptt.js';
-import { getQuickAskWindow, hideQuickAsk, showQuickAsk, resizeQuickAsk } from './quick-ask.js';
+import {
+  getCompanionMode,
+  getModeSeq,
+  getExpandedSurface,
+  getPopoutState,
+  getQuickAskShortcutState,
+  onAppReady,
+  onModeApplied,
+  isPinnedCollapsed,
+  relaySummon,
+  ackSummon,
+  pushChatContext,
+  pushPopoutState,
+  resizeCompanionPinned,
+  setCompanionPinned,
+  setPinnedCollapsed,
+  setCompanionInteractive,
+  setQuickAskShortcut,
+  setShortcutCaptureActive,
+} from './quick-ask.js';
+import { screenPointerService } from './screen-pointer.js';
 import { RunEvent } from '@x/shared/dist/runs.js';
 import { ServiceEvent } from '@x/shared/dist/service-events.js';
 import type { SessionBusEvent } from '@x/shared/dist/sessions.js';
@@ -36,7 +55,7 @@ import type { ISessions, EmitterSessionBus } from '@x/core/dist/runtime/sessions
 import type { ITurnEventBus } from '@x/core/dist/runtime/turns/event-hub.js';
 import container from '@x/core/dist/di/container.js';
 import { testModelConnection, listModelsForProvider, generateOneShot } from '@x/core/dist/models/models.js';
-import { getModelCatalog } from '@x/core/dist/models/catalog.js';
+import { getImageModelCatalog, getModelCatalog } from '@x/core/dist/models/catalog.js';
 import { captureProviderConnected, captureProviderDisconnected } from '@x/core/dist/analytics/model-providers.js';
 import { getDefaultModelAndProvider } from '@x/core/dist/models/defaults.js';
 import { isSignedIn } from '@x/core/dist/account/account.js';
@@ -60,6 +79,7 @@ import type { ICodeProjectsRepo } from '@x/core/dist/code-mode/projects/repo.js'
 import type { ICodeSessionsRepo } from '@x/core/dist/code-mode/sessions/repo.js';
 import { CodeSessionService } from '@x/core/dist/code-mode/sessions/service.js';
 import { CodeSessionStatusTracker } from '@x/core/dist/code-mode/sessions/status-tracker.js';
+import { HomeThreadsTracker } from '@x/core/dist/home/threads.js';
 import type { CodeModeManager } from '@x/core/dist/code-mode/acp/manager.js';
 import * as codeGit from '@x/core/dist/code-mode/git/service.js';
 import { readProjectDir, readProjectFile } from '@x/core/dist/code-mode/projects/fs.js';
@@ -88,7 +108,10 @@ import { syncSlackKnowledgeSources, triggerSync as triggerSlackKnowledgeSync, ge
 import { isOnboardingComplete, markOnboardingComplete } from '@x/core/dist/config/note_creation_config.js';
 import { loadNotificationSettings, saveNotificationSettings } from '@x/core/dist/config/notification_config.js';
 import { loadTurnLimitsSettings, saveTurnLimitsSettings } from '@x/core/dist/config/turn_limits.js';
+import { loadRetentionSettings, saveRetentionSettings } from '@x/core/dist/config/retention.js';
+import { runRetentionSweep } from '@x/core/dist/runtime/sessions/retention.js';
 import { saveAppSettings } from '@x/core/dist/config/app_settings.js';
+import { isLoginItemEnabled, setLoginItemEnabled } from './login_item.js';
 import { setSelfCaptureActive } from '@x/core/dist/meetings/detector.js';
 import { notifyIfEnabled } from '@x/core/dist/application/notification/notifier.js';
 import { consumePendingToggleMeetingNotes, setTrayRecordingState } from './tray.js';
@@ -163,17 +186,18 @@ import {
 } from '@x/core/dist/knowledge/study.js';
 import { versionHistory, voice } from '@x/core';
 import { classifySchedule, processRowboatInstruction } from '@x/core/dist/knowledge/inline_tasks.js';
+import { editSlide, generateDeckOutline, generateSlide } from '@x/core/dist/knowledge/deck_outline.js';
 import { getBillingInfo } from '@x/core/dist/billing/billing.js';
 import { claimReferralCode, getCreditsState, maybeActivateCredit, subscribeCreditActivations } from '@x/core/dist/billing/credits.js';
 import { summarizeMeeting } from '@x/core/dist/knowledge/summarize_meeting.js';
 import { getAccessToken } from '@x/core/dist/auth/tokens.js';
 import { getRowboatConfig } from '@x/core/dist/config/rowboat.js';
 import { runLiveNoteAgent } from '@x/core/dist/knowledge/live-note/runner.js';
-import { listImportantThreads, listEverythingElseThreads, saveMessageBodyHeight, triggerSync as triggerGmailSync, sendThreadReply, saveThreadDraft, deleteThreadDraft, listDraftThreads, searchThreads, archiveThread, archiveCategoryThreads, trashThread, markThreadRead, downloadAttachment, getAccountEmail, getAccountName, getConnectionStatus as getGmailConnectionStatus, setThreadImportance, setThreadCategory } from '@x/core/dist/knowledge/sync_gmail.js';
+import { listImportantThreads, listEverythingElseThreads, saveMessageBodyHeight, setThreadImportance, setThreadCategory } from '@x/core/dist/knowledge/email/store.js';
+import { triggerEmailSync, sendThreadReply, saveThreadDraft, deleteThreadDraft, listDraftThreads, searchThreads, archiveThread, archiveCategoryThreads, trashThread, markThreadRead, downloadAttachment, getAccountEmail, getAccountName, getConnectionStatus as getEmailConnectionStatus, searchSentContacts, warmSentContacts } from '@x/core/dist/knowledge/email/dispatcher.js';
 import { loadEmailInstructions, saveEmailInstructions } from '@x/core/dist/knowledge/email_instructions.js';
 import { getEmailLabels, syncCustomLabelsFromInstructions } from '@x/core/dist/knowledge/email_labels.js';
 import { searchContacts as searchGmailContacts, warmContactIndex } from '@x/core/dist/knowledge/gmail_contacts.js';
-import { searchSentContacts, warmSentContacts } from '@x/core/dist/knowledge/gmail_sent_contacts.js';
 import { getGoogleDocsConnectionStatus, importGoogleDoc, syncGoogleDocDown, syncGoogleDocUp, getGoogleDocLink } from '@x/core/dist/knowledge/google_docs.js';
 import { startManagedGooglePick } from './google-picker-managed.js';
 import { liveNoteBus } from '@x/core/dist/knowledge/live-note/bus.js';
@@ -187,6 +211,26 @@ import {
   listLiveNotes,
 } from '@x/core/dist/knowledge/live-note/fileops.js';
 import { runBackgroundTask } from '@x/core/dist/background-tasks/runner.js';
+import { runTodoItem, stopTodoRun, commentOnTodoItem, startHomeChat, replyHomeChat, runningItemKeys } from '@x/core/dist/todo/runner.js';
+import { getSessionIndex as getTodoSessionIndex } from '@x/core/dist/todo/session-index.js';
+import { getConversation as getTodoConversation, deriveConversation as deriveSessionConversation } from '@x/core/dist/todo/conversation.js';
+import { recordPlannerSignal, addYourRule as addPlannerRule, listSuggestions as listTodoSuggestions, takeSuggestion as takeTodoSuggestion } from '@x/core/dist/todo/planner-memory.js';
+import { getPlannerConfig, setPlannerConfig } from '@x/core/dist/todo/planner-task.js';
+import { findItem as findTodoItem } from '@x/core/dist/todo/fileops.js';
+import { todoBus } from '@x/core/dist/todo/bus.js';
+import {
+  readTodo,
+  saveTodo,
+  addItem as addTodoItem,
+  addSubItem as addTodoSubItem,
+  clearCompleted as clearTodoCompleted,
+  dismissItem as dismissTodoItem,
+  listArchived as listTodoArchived,
+  restoreItem as restoreTodoItem,
+  deleteArchived as deleteTodoArchived,
+  importTodoAttachments,
+  linksToText as todoLinksToText,
+} from '@x/core/dist/todo/fileops.js';
 import { backgroundTaskBus } from '@x/core/dist/background-tasks/bus.js';
 import {
   fetchTask,
@@ -381,6 +425,7 @@ function slackMessageUrl(message: Record<string, unknown>, workspaceUrl: string 
   return `${workspaceUrl.replace(/\/$/, '')}/archives/${channelId}/p${ts.replace('.', '')}`;
 }
 import { browserIpcHandlers } from './browser/ipc.js';
+import { spacesIpcHandlers } from './spaces/ipc.js';
 
 /**
  * Convert markdown to a styled HTML document for PDF/DOCX export.
@@ -481,41 +526,19 @@ type InvokeHandlers = {
 // In-flight streaming TTS requests, keyed by renderer-chosen requestId.
 const activeTtsStreams = new Map<string, AbortController>();
 
-// Video-mode popout window (shown for the whole duration of a screen share,
-// floating over every app including Rowboat itself) and the last call state
-// pushed by the main window — replayed to the popout when it finishes loading.
-let videoPopoutWin: BrowserWindow | null = null;
-let lastVideoPopoutState: {
-  ttsState: 'idle' | 'synthesizing' | 'speaking';
-  status: 'idle' | 'listening' | 'thinking' | 'speaking' | null;
-  cameraOn: boolean;
-  micMuted: boolean;
-  screenSharing: boolean;
-  interimText: string | null;
-  pttLocked: boolean;
-  continuousListening: boolean;
-  responseText: string | null;
-  questionText: string | null;
-} | null = null;
-
-// Popout window height bounds: the base pill, and the ceiling with the
-// response panel expanded (renderer-driven via video:popoutResize).
-const POPOUT_BASE_HEIGHT = 218;
-const POPOUT_MAX_HEIGHT = 500;
-
 // Match only real app windows — getAllWindows() can also contain the popout
 // itself and hidden utility windows (e.g. PDF-export renderers), which must
 // not be shown, focused, or sent app events.
-function findMainAppWindow(): BrowserWindow | undefined {
+export function findMainAppWindow(): BrowserWindow | undefined {
   return BrowserWindow.getAllWindows().find((w) => {
-    if (w === videoPopoutWin || w.isDestroyed()) return false;
+    if (w.isDestroyed()) return false;
     const url = w.webContents.getURL();
     const isAppWindow = url.startsWith('app://') || url.startsWith('http://localhost');
     // Every utility window loads the same bundle with a hash route
-    // (#video-popout, #quick-ask, #meeting-detected) — only the hashless
-    // window is the real app. Matching just video-popout let the quick-ask
-    // relay pick the quick-ask window ITSELF as the "app window" and send
-    // the question right back to it (bar stuck on "Thinking…").
+    // (#quick-ask, #meeting-detected) — only the hashless window is the real
+    // app. Matching anything looser let the quick-ask relay pick the
+    // companion window ITSELF as the "app window" and send the question
+    // right back to it (bar stuck on "Thinking…").
     return isAppWindow && !url.includes('#');
   });
 }
@@ -772,9 +795,10 @@ export function emitOAuthEvent(event: { provider: string; success: boolean; erro
   // prompt, so any OAuth state change must rebuild it.
   invalidateCopilotInstructionsCache();
   broadcastToWindows('oauth:didConnect', event);
-  // Google connect (both BYOK and rowboat-mode paths funnel through here) is
-  // the "connected Gmail" first-time reward.
-  if (event.provider === 'google' && event.success) {
+  // Email connect (Google BYOK, Google rowboat-mode, and Microsoft all funnel
+  // through here) is the "connected email" first-time reward. The stored
+  // credit key keeps its historical name — renaming would double-grant.
+  if ((event.provider === 'google' || event.provider === 'microsoft') && event.success) {
     void maybeActivateCredit('first_gmail_connected');
   }
 }
@@ -797,6 +821,20 @@ export async function startCodeSessionStatusWatcher(): Promise<void> {
   await tracker.start();
   codeSessionStatusWatcher = tracker.onTransition((sessionId, status) => {
     broadcastToWindows('codeSession:status', { sessionId, status });
+  });
+}
+
+// Home thread registry (the Deck): live status from the turn spine → a
+// debounced ping; the renderer refetches home:threads on it.
+let homeThreadsWatcher: (() => void) | null = null;
+export function startHomeThreadsWatcher(): void {
+  if (homeThreadsWatcher) {
+    return;
+  }
+  const tracker = container.resolve<HomeThreadsTracker>('homeThreadsTracker');
+  tracker.start();
+  homeThreadsWatcher = tracker.onChange(() => {
+    broadcastToWindows('home:threadsChanged', {});
   });
 }
 
@@ -909,6 +947,43 @@ export function markSessionsIndexReady(): void {
   resolveSessionsIndexReady();
 }
 
+// Daily storage-retention sweep (auto-delete old chats & task transcripts).
+// Started from main.ts once the session index is ready; the initial run is
+// delayed so it never competes with startup. The first launch with retention
+// enabled only arms the one-time notice (retention:consumeFirstRunNotice) —
+// sweeping begins on the next launch, after the user has seen it.
+let retentionSweepStarted = false;
+export function startRetentionSweep(): void {
+  if (retentionSweepStarted) return;
+  retentionSweepStarted = true;
+  const sweep = async () => {
+    try {
+      const settings = await loadRetentionSettings();
+      if (!settings.enabled || !settings.noticeShown) return;
+      const result = await runRetentionSweep({
+        sessions: container.resolve<ISessions>('sessions'),
+        turnsRootDir: container.resolve<string>('turnsRootDir'),
+        settings,
+      });
+      // After the session sweep: clear code-mode residue whose chat is now
+      // gone (meta / ACP handle / workdir sidecar — worktrees stay on disk).
+      const orphaned = await container.resolve<CodeSessionService>('codeSessionService').sweepOrphanedMeta().catch(() => 0);
+      if (orphaned > 0) {
+        console.log(`[Retention] cleared code-mode meta for ${orphaned} deleted session(s)`);
+      }
+      if (result.deletedSessions > 0 || result.deletedTurnFiles > 0) {
+        console.log(
+          `[Retention] sweep: deleted ${result.deletedSessions} session(s), ${result.deletedTurnFiles} turn file(s)`,
+        );
+      }
+    } catch (error) {
+      console.error('[Retention] sweep failed:', error);
+    }
+  };
+  setTimeout(() => { void sweep(); }, 90_000);
+  setInterval(() => { void sweep(); }, 24 * 60 * 60 * 1000);
+}
+
 let servicesWatcher: (() => void) | null = null;
 export async function startServicesWatcher(): Promise<void> {
   if (servicesWatcher) {
@@ -932,6 +1007,14 @@ export function startBackgroundTaskAgentWatcher(): void {
   if (backgroundTaskAgentWatcher) return;
   backgroundTaskAgentWatcher = backgroundTaskBus.subscribe((event) => {
     broadcastToWindows('bg-task-agent:events', event);
+  });
+}
+
+let todoWatcher: (() => void) | null = null;
+export function startTodoWatcher(): void {
+  if (todoWatcher) return;
+  todoWatcher = todoBus.subscribe((event) => {
+    broadcastToWindows('todo:events', event);
   });
 }
 
@@ -972,12 +1055,12 @@ export function setupIpcHandlers() {
     broadcastToWindows('jarvis:executionAuthorityChanged', authority);
   });
 
-  // Pre-warm the Gmail contact indices so the first compose-box keystroke is instant.
+  // Pre-warm the email contact indices so the first compose-box keystroke is instant.
   // - warmContactIndex(): synchronous local-snapshot fallback (instant, narrow coverage).
-  // - warmSentContacts(): kicks off a background Gmail API sync of the SENT label
-  //   for full historical coverage of people you've actually emailed.
+  // - warmSentContacts(): kicks off a background sync of the active provider's
+  //   sent mail for full historical coverage of people you've actually emailed.
   warmContactIndex();
-  warmSentContacts();
+  void warmSentContacts();
 
   registerIpcHandlers({
     'app:getVersions': async () => {
@@ -1061,14 +1144,11 @@ export function setupIpcHandlers() {
       // Dev builds never register a login item (it would point at the dev
       // Electron binary), so report off.
       if (!app.isPackaged) return { openAtLogin: false };
-      return { openAtLogin: app.getLoginItemSettings().openAtLogin };
+      return { openAtLogin: isLoginItemEnabled() };
     },
     'app:setLoginItemSettings': async (_event, args) => {
       if (app.isPackaged) {
-        app.setLoginItemSettings({
-          openAtLogin: args.openAtLogin,
-          ...(process.platform === 'win32' ? { args: ['--hidden'] } : {}),
-        });
+        setLoginItemEnabled(args.openAtLogin);
         // The user has expressed an explicit choice — never re-apply the
         // first-run default over it.
         saveAppSettings({ loginItemRegistered: true });
@@ -1106,33 +1186,169 @@ export function setupIpcHandlers() {
       return {};
     },
     'app:openPrivacySettings': async (_event, args) => {
+      if (process.platform === 'win32') {
+        // Windows Settings deep links (ms-settings). Sections without a
+        // Windows equivalent (screen recording and input monitoring are
+        // macOS TCC concepts) report failure, as before.
+        const winUris: Partial<Record<typeof args.section, string>> = {
+          microphone: 'ms-settings:privacy-microphone',
+          camera: 'ms-settings:privacy-webcam',
+          notifications: 'ms-settings:notifications',
+        };
+        const uri = winUris[args.section];
+        if (!uri) return { success: false };
+        try {
+          await shell.openExternal(uri);
+          return { success: true };
+        } catch {
+          return { success: false };
+        }
+      }
       if (process.platform !== 'darwin') return { success: false };
-      const anchors = {
-        microphone: 'Privacy_Microphone',
-        camera: 'Privacy_Camera',
-        'screen-recording': 'Privacy_ScreenCapture',
-        'input-monitoring': 'Privacy_ListenEvent',
-      } as const;
+      // Notification settings live outside the Privacy & Security pane.
+      const url = args.section === 'notifications'
+        ? 'x-apple.systempreferences:com.apple.Notifications-Settings.extension'
+        : `x-apple.systempreferences:com.apple.preference.security?${({
+            microphone: 'Privacy_Microphone',
+            camera: 'Privacy_Camera',
+            'screen-recording': 'Privacy_ScreenCapture',
+            'input-monitoring': 'Privacy_ListenEvent',
+          } as const)[args.section]}`;
       try {
-        await shell.openExternal(
-          `x-apple.systempreferences:com.apple.preference.security?${anchors[args.section]}`,
-        );
+        await shell.openExternal(url);
         return { success: true };
       } catch {
         return { success: false };
       }
     },
-    // --- Quick-ask bar relays ---
+    'permissions:getStatus': async () => {
+      const platform = process.platform === 'darwin' ? 'darwin' as const
+        : process.platform === 'win32' ? 'win32' as const : 'linux' as const;
+      type PermState = ipc.IPCChannels['permissions:getStatus']['res']['microphone'];
+      // getMediaAccessStatus exists on darwin and win32 only.
+      const media = (kind: 'microphone' | 'camera' | 'screen'): PermState => {
+        try {
+          return systemPreferences.getMediaAccessStatus(kind) as PermState;
+        } catch {
+          return 'unknown';
+        }
+      };
+      if (platform === 'linux') {
+        // No OS permission gates for any of these under X11; notifications
+        // vary by desktop and can't be read.
+        return {
+          platform,
+          microphone: 'not-required', camera: 'not-required', screenRecording: 'not-required',
+          inputMonitoring: 'not-required',
+          notifications: 'unknown',
+        };
+      }
+      if (platform === 'win32') {
+        // Desktop apps are gated by the global "let desktop apps access…"
+        // toggles (surfaced through getMediaAccessStatus); everything else
+        // needs no permission on Windows.
+        return {
+          platform,
+          microphone: media('microphone'), camera: media('camera'),
+          screenRecording: 'not-required',
+          inputMonitoring: 'not-required',
+          notifications: 'unknown',
+        };
+      }
+      // macOS. Input monitoring has no read API — infer from the key hook:
+      // events seen = definitely granted; anything else is honestly unknown
+      // (the hook only runs during calls, so absence of events proves
+      // nothing). Notifications can't be read at all.
+      const ptt = getPttStatus();
+      return {
+        platform,
+        microphone: media('microphone'),
+        camera: media('camera'),
+        screenRecording: media('screen'),
+        inputMonitoring: ptt.eventsSeen ? 'granted' : 'unknown',
+        notifications: 'unknown',
+      };
+    },
+    'permissions:request': async (_event, args) => {
+      const darwin = process.platform === 'darwin';
+      switch (args.permission) {
+        case 'microphone':
+        case 'camera': {
+          if (!darwin) return { state: 'unknown' };
+          try {
+            const granted = await systemPreferences.askForMediaAccess(args.permission);
+            return { state: granted ? 'granted' : 'denied' };
+          } catch {
+            return { state: 'unknown' };
+          }
+        }
+        case 'input-monitoring': {
+          if (!darwin) return { state: 'not-required' };
+          // Recreates the uiohook tap: fires the consent prompt if macOS
+          // never asked, and revives a tap created before a grant. The
+          // status stays unknown until real key events arrive (next call).
+          retryPttHook();
+          return { state: 'unknown' };
+        }
+      }
+    },
+    // --- Hover companion relays ---
+    'quickAsk:getShortcut': async () => {
+      return getQuickAskShortcutState();
+    },
+    'quickAsk:setShortcut': async (_event, args) => {
+      return setQuickAskShortcut(args.accelerator);
+    },
+    'quickAsk:setShortcutCaptureActive': async (_event, args) => {
+      setShortcutCaptureActive(args.active);
+      return {};
+    },
     'quickAsk:submit': async (_event, args) => {
       findMainAppWindow()?.webContents.send('quick-ask:submit', args);
       return {};
     },
-    'quickAsk:hide': async () => {
-      hideQuickAsk();
+    'quickAsk:getMode': async () => {
+      return {
+        seq: getModeSeq(),
+        mode: getCompanionMode(),
+        collapsed: isPinnedCollapsed(),
+        surface: getExpandedSurface(),
+      };
+    },
+    'quickAsk:modeApplied': async (_event, args) => {
+      onModeApplied(args.seq);
       return {};
     },
-    'quickAsk:show': async () => {
-      showQuickAsk();
+    'quickAsk:appReady': async () => {
+      onAppReady();
+      return {};
+    },
+    'quickAsk:tuck': async () => {
+      // The card's tuck handle: the SAME relay as the chord (the next pin
+      // gets focus; the app window decides HOW to get there — start a voice
+      // call, or minimize a live call to the floating surface; a missing or
+      // loading app window is waited for; nothing answering falls back).
+      relaySummon();
+      return {};
+    },
+    'quickAsk:tuckAck': async () => {
+      ackSummon();
+      return {};
+    },
+    'quickAsk:setPinnedCollapsed': async (_event, args) => {
+      setPinnedCollapsed(args.collapsed);
+      return {};
+    },
+    'quickAsk:setInteractive': async (_event, args) => {
+      setCompanionInteractive(args.interactive);
+      return {};
+    },
+    'quickAsk:chatContext': async (_event, args) => {
+      pushChatContext(args);
+      return {};
+    },
+    'quickAsk:selectChat': async (_event, args) => {
+      findMainAppWindow()?.webContents.send('quick-ask:select-chat', args);
       return {};
     },
     'quickAsk:newChat': async () => {
@@ -1148,14 +1364,6 @@ export function setupIpcHandlers() {
         app.focus({ steal: true });
         main.webContents.send('quick-ask:open-chat', null);
       }
-      return {};
-    },
-    'quickAsk:resize': async (_event, args) => {
-      resizeQuickAsk(args.height);
-      return {};
-    },
-    'quickAsk:state': async (_event, args) => {
-      getQuickAskWindow()?.webContents.send('quick-ask:state', args);
       return {};
     },
     'meeting:notifyNotesReady': async (_event, args) => {
@@ -1217,6 +1425,88 @@ export function setupIpcHandlers() {
     'workspace:remove': async (_event, args) => {
       return withWorkspaceWatcherPaused(() => workspace.remove(args.path, args.opts));
     },
+    'workspace:pickImage': async (event) => {
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const options = {
+        properties: ['openFile' as const],
+        filters: [
+          { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tiff'] },
+        ],
+      };
+      const result = win
+        ? await dialog.showOpenDialog(win, options)
+        : await dialog.showOpenDialog(options);
+      const filePath = result.filePaths[0];
+      if (result.canceled || !filePath) {
+        return { picked: false };
+      }
+      try {
+        const bytes = await fs.readFile(filePath);
+        const ext = path.extname(filePath).slice(1).toLowerCase();
+        if (!ext) {
+          return { picked: false, error: 'That file has no extension' };
+        }
+        return {
+          picked: true,
+          name: path.basename(filePath),
+          ext,
+          dataBase64: bytes.toString('base64'),
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to read the image';
+        return { picked: false, error: message };
+      }
+    },
+    'workspace:exportCopy': async (event, args) => {
+      // Same path scoping as every other workspace handler: the source must
+      // resolve inside the workspace boundary, and this throws if it does not.
+      const sourcePath = workspace.resolveWorkspacePath(args.path);
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const options = { defaultPath: path.basename(sourcePath) };
+      // Electron rejects an explicit null window, so use the modeless overload
+      // when the sender has none rather than passing one through.
+      const result = win
+        ? await dialog.showSaveDialog(win, options)
+        : await dialog.showSaveDialog(options);
+      if (result.canceled || !result.filePath) {
+        return { saved: false };
+      }
+      try {
+        // The dialog already confirmed any overwrite with the user.
+        await fs.copyFile(sourcePath, result.filePath);
+        return { saved: true, dest: result.filePath };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to export a copy';
+        return { saved: false, error: message };
+      }
+    },
+    'deck:generateOutline': async (_event, args) => {
+      try {
+        const outline = await generateDeckOutline(args);
+        return { outline };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to generate the deck outline';
+        return { error: message };
+      }
+    },
+    'deck:generateSlide': async (_event, args) => {
+      try {
+        const slide = await generateSlide(args);
+        return { slide };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to generate the slide';
+        return { error: message };
+      }
+    },
+    'deck:editSlide': async (_event, args) => {
+      try {
+        const slide = await editSlide(args);
+        return { slide };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to edit the slide';
+        return { error: message };
+      }
+    },
     'gmail:getImportant': async (_event, args) => {
       return listImportantThreads({ cursor: args.cursor, limit: args.limit });
     },
@@ -1224,7 +1514,7 @@ export function setupIpcHandlers() {
       return listEverythingElseThreads({ cursor: args.cursor, limit: args.limit, category: args.category });
     },
     'gmail:triggerSync': async () => {
-      triggerGmailSync();
+      await triggerEmailSync();
       return {};
     },
     'gmail:sendReply': async (_event, args) => {
@@ -1247,7 +1537,7 @@ export function setupIpcHandlers() {
       return searchThreads(args.query, { limit: args.limit });
     },
     'gmail:getConnectionStatus': async () => {
-      return getGmailConnectionStatus();
+      return getEmailConnectionStatus();
     },
     'gmail:getAccountEmail': async () => {
       return { email: await getAccountEmail() };
@@ -1391,6 +1681,20 @@ export function setupIpcHandlers() {
       }
       return result;
     },
+    'sessions:sendOrQueueMessage': async (_event, args) => {
+      return container.resolve<ISessions>('sessions').sendOrQueueMessage(args.sessionId, args.input, args.config);
+    },
+    'sessions:listQueued': async (_event, args) => {
+      return { queue: container.resolve<ISessions>('sessions').listQueued(args.sessionId) };
+    },
+    'sessions:editQueued': async (_event, args) => {
+      container.resolve<ISessions>('sessions').editQueued(args.sessionId, args.queueId, args.message);
+      return { success: true };
+    },
+    'sessions:removeQueued': async (_event, args) => {
+      const removed = container.resolve<ISessions>('sessions').removeQueued(args.sessionId, args.queueId);
+      return { removed: removed ?? null };
+    },
     'sessions:respondToPermission': async (_event, args) => {
       await container.resolve<ISessions>('sessions').respondToPermission(args.turnId, args.toolCallId, args.decision, args.metadata);
       return { success: true };
@@ -1400,8 +1704,8 @@ export function setupIpcHandlers() {
       return { success: true };
     },
     'sessions:stopTurn': async (_event, args) => {
-      await container.resolve<ISessions>('sessions').stopTurn(args.turnId, args.reason);
-      return { success: true };
+      const { dequeued } = await container.resolve<ISessions>('sessions').stopTurn(args.turnId, args.reason);
+      return { success: true, dequeued };
     },
     'sessions:resumeTurn': async (_event, args) => {
       await container.resolve<ISessions>('sessions').resumeTurn(args.sessionId);
@@ -1412,7 +1716,20 @@ export function setupIpcHandlers() {
       return { success: true };
     },
     'sessions:delete': async (_event, args) => {
-      await container.resolve<ISessions>('sessions').deleteSession(args.sessionId);
+      // An ADOPTED chat is a code session under a plain-chat door: deleting
+      // it through the runtime alone would orphan its code meta, stored ACP
+      // conversation, workdir sidecar — and leave a ghost row in the Code
+      // rail. Route through CodeSessionService.delete, which cleans all of
+      // that up (the runtime layer stays ignorant of code-mode). The
+      // worktree checkout is deliberately KEPT on disk — an unmerged
+      // worktree may hold the only copy of the work; explicit removal
+      // stays a Code-rail decision.
+      const codeMeta = await container.resolve<ICodeSessionsRepo>('codeSessionsRepo').get(args.sessionId).catch(() => null);
+      if (codeMeta) {
+        await container.resolve<CodeSessionService>('codeSessionService').delete(args.sessionId, { removeWorktree: false });
+      } else {
+        await container.resolve<ISessions>('sessions').deleteSession(args.sessionId);
+      }
       return { success: true };
     },
     'turns:subscribe': async (event, args) => {
@@ -1486,6 +1803,9 @@ export function setupIpcHandlers() {
     'models:list': async (_event, args) => {
       return await getModelCatalog({ refreshProvider: args?.refreshProvider });
     },
+    'models:listImageModels': async () => {
+      return await getImageModelCatalog();
+    },
     'models:test': async (_event, args) => {
       return await testModelConnection(args.provider, args.model);
     },
@@ -1528,6 +1848,7 @@ export function setupIpcHandlers() {
           backgroundTask: tasks.backgroundTask ?? null,
           subagent: tasks.subagent ?? null,
         },
+        imageModel: cfg?.imageModel ?? null,
         deferBackgroundTasks: cfg?.deferBackgroundTasks === true,
       };
     },
@@ -1617,11 +1938,11 @@ export function setupIpcHandlers() {
     'codeMode:getConfig': async () => {
       const repo = container.resolve<ICodeModeConfigRepo>('codeModeConfigRepo');
       const config = await repo.getConfig();
-      return { enabled: config.enabled, approvalPolicy: config.approvalPolicy };
+      return { enabled: config.enabled, approvalPolicy: config.approvalPolicy, defaultProjectId: config.defaultProjectId };
     },
     'codeMode:setConfig': async (_event, args) => {
       const repo = container.resolve<ICodeModeConfigRepo>('codeModeConfigRepo');
-      await repo.setConfig({ enabled: args.enabled, approvalPolicy: args.approvalPolicy });
+      await repo.setConfig({ enabled: args.enabled, approvalPolicy: args.approvalPolicy, defaultProjectId: args.defaultProjectId });
       invalidateCopilotInstructionsCache();
       return { success: true };
     },
@@ -1672,7 +1993,7 @@ export function setupIpcHandlers() {
     'codeSession:create': async (_event, args) => {
       const service = container.resolve<CodeSessionService>('codeSessionService');
       const session = await service.create(args);
-      capture('code_session_created', { mode: session.mode, agent: session.agent });
+      capture('code_session_created', { agent: session.agent });
       return { session };
     },
     'codeSession:list': async () => {
@@ -1696,20 +2017,6 @@ export function setupIpcHandlers() {
         deleteBranch: args.deleteBranch,
       });
       return { success: true };
-    },
-    'codeSession:sendMessage': async (_event, args) => {
-      const service = container.resolve<CodeSessionService>('codeSessionService');
-      // Intentionally not awaited: the turn can run for minutes and streams over
-      // runs:events. sendMessage validates synchronously enough that busy/unknown
-      // errors are reported via the run's error events instead.
-      const resultPromise = service.sendMessage(args.sessionId, args.text);
-      // Surface immediate rejections (busy session, unknown id) to the caller.
-      const result = await Promise.race([
-        resultPromise,
-        new Promise<{ accepted: true }>((resolve) => setTimeout(() => resolve({ accepted: true }), 300)),
-      ]);
-      resultPromise.catch((err) => console.error('codeSession:sendMessage failed', err));
-      return result;
     },
     'codeSession:stop': async (_event, args) => {
       const service = container.resolve<CodeSessionService>('codeSessionService');
@@ -2298,6 +2605,27 @@ export function setupIpcHandlers() {
       const mimeType = mimeMap[ext] || 'application/octet-stream';
       return { data: buffer.toString('base64'), mimeType, size: stat.size };
     },
+    'spreadsheet:load': async (_event, args) => {
+      const { loadSheetWindow } = await import('@x/core/dist/spreadsheet/spreadsheet.js');
+      const result = await loadSheetWindow(args.path, args.sheet, args.offset, args.limit);
+      return {
+        format: result.meta.format,
+        sheets: result.meta.sheets,
+        activeSheet: result.activeSheet,
+        rows: result.rows,
+        display: result.display,
+        firstRow: result.firstRow,
+        firstRowDisplay: result.firstRowDisplay,
+        offset: result.offset,
+        totalRows: result.totalRows,
+        totalColumns: result.totalColumns,
+        etag: result.meta.etag,
+      };
+    },
+    'spreadsheet:find': async (_event, args) => {
+      const { findInSheet } = await import('@x/core/dist/spreadsheet/spreadsheet.js');
+      return await findInSheet(args.path, args.sheet, args.query, args.maxMatches);
+    },
     'dialog:openDirectory': async (event, args) => {
       const win = BrowserWindow.fromWebContents(event.sender);
       const defaultPath = args.defaultPath ? resolveShellPath(args.defaultPath) : os.homedir();
@@ -2691,87 +3019,17 @@ export function setupIpcHandlers() {
       }
     },
     'video:setPopout': async (_event, args) => {
-      if (!args.show) {
-        if (videoPopoutWin && !videoPopoutWin.isDestroyed()) videoPopoutWin.destroy();
-        videoPopoutWin = null;
-        return {};
-      }
-      if (videoPopoutWin && !videoPopoutWin.isDestroyed()) return {};
-
-      const workArea = screen.getPrimaryDisplay().workArea;
-      const width = 340;
-      const height = POPOUT_BASE_HEIGHT;
-      const ipcDir = path.dirname(fileURLToPath(import.meta.url));
-      const preloadPath = app.isPackaged
-        ? path.join(ipcDir, '../preload/dist/preload.js')
-        : path.join(ipcDir, '../../../preload/dist/preload.js');
-      const win = new BrowserWindow({
-        width,
-        height,
-        x: workArea.x + workArea.width - width - 24,
-        y: workArea.y + 24,
-        frame: false,
-        resizable: false,
-        // Never let macOS fullscreen/tile the pill: creating a window while
-        // the app window is in a native-fullscreen Space can otherwise open
-        // it AS a fullscreen window (the pill swallowing the whole screen).
-        fullscreenable: false,
-        minimizable: false,
-        maximizable: false,
-        // NSPanel (macOS): auxiliary windows may join other apps' fullscreen
-        // Spaces — a plain window can't, which made the pill vanish whenever
-        // the user's current app was fullscreen.
-        ...(process.platform === 'darwin' ? { type: 'panel' as const } : {}),
-        alwaysOnTop: true,
-        skipTaskbar: true,
-        show: false,
-        hasShadow: true,
-        backgroundColor: '#171717',
-        webPreferences: {
-          nodeIntegration: false,
-          contextIsolation: true,
-          sandbox: true,
-          preload: preloadPath,
-        },
-      });
-      // Float above other apps on every workspace, INCLUDING fullscreen
-      // Spaces. `skipTransformProcessType` keeps the Dock icon: without it,
-      // `visibleOnFullScreen` turns the app into a macOS "agent" app for as
-      // long as the window exists (reads as Rowboat having vanished).
-      win.setAlwaysOnTop(true, 'floating');
-      win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
-      win.webContents.once('did-finish-load', () => {
-        if (lastVideoPopoutState) {
-          win.webContents.send('video:popout-state', lastVideoPopoutState);
-        }
-        // showInactive: appearing must not steal focus from the app the user
-        // switched to — that would immediately re-hide the popout.
-        if (!win.isDestroyed()) win.showInactive();
-      });
-      win.on('closed', () => {
-        if (videoPopoutWin === win) videoPopoutWin = null;
-      });
-      videoPopoutWin = win;
-      if (app.isPackaged) {
-        win.loadURL('app://-/index.html#video-popout');
-      } else {
-        win.loadURL('http://localhost:5173/#video-popout');
-      }
+      // The call's floating surface is the companion window's pinned role —
+      // no separate popout window anymore (see quick-ask.ts).
+      setCompanionPinned(args.show);
       return {};
     },
     'video:popoutState': async (_event, args) => {
-      lastVideoPopoutState = args;
-      if (videoPopoutWin && !videoPopoutWin.isDestroyed()) {
-        videoPopoutWin.webContents.send('video:popout-state', args);
-      }
+      pushPopoutState(args);
       return {};
     },
     'video:popoutResize': async (_event, args) => {
-      if (videoPopoutWin && !videoPopoutWin.isDestroyed()) {
-        const clamped = Math.max(POPOUT_BASE_HEIGHT, Math.min(POPOUT_MAX_HEIGHT, Math.round(args.height)));
-        const [width] = videoPopoutWin.getSize();
-        videoPopoutWin.setSize(width, clamped);
-      }
+      resizeCompanionPinned(args.height);
       return {};
     },
     'app:focusMainWindow': async () => {
@@ -2787,7 +3045,16 @@ export function setupIpcHandlers() {
       return {};
     },
     'video:getPopoutState': async () => {
-      return { state: lastVideoPopoutState };
+      return { state: getPopoutState() };
+    },
+    'screenPointer:setShareActive': async (_event, args) => {
+      // Gates the assistant's screen-pointer tool and tears the pointer
+      // overlay down the moment the share (call or quick-ask) ends.
+      screenPointerService.setShareActive(args.active);
+      return {};
+    },
+    'screenPointer:getState': async () => {
+      return { state: screenPointerService.getState() };
     },
     'video:popoutAction': async (_event, args) => {
       // Relay a popout control-bar action to the app window, which owns the
@@ -2863,6 +3130,236 @@ export function setupIpcHandlers() {
     'live-note:listNotes': async () => {
       const notes = await listLiveNotes();
       return { notes };
+    },
+    // Todo (home to-do list) handlers
+    'todo:get': async () => {
+      const list = await readTodo();
+      return {
+        list,
+        running: runningItemKeys(),
+        sessions: await getTodoSessionIndex(),
+        suggestions: await listTodoSuggestions(),
+      };
+    },
+    'todo:acceptSuggestion': async (_event, args) => {
+      try {
+        const taken = await takeTodoSuggestion(args.text);
+        if (!taken) return { success: false, error: 'Suggestion no longer exists' };
+        // Accepting confers task-ness: the item joins the list (badge kept),
+        // and it is a positive taste signal. Delegated text still waits for
+        // the user's explicit go — accepting is not running.
+        await addTodoItem(taken, { proposed: true });
+        void recordPlannerSignal('kept', taken).catch(() => {});
+        todoBus.publish({ type: 'list_changed' });
+        return { success: true };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    'todo:declineSuggestion': async (_event, args) => {
+      try {
+        const taken = await takeTodoSuggestion(args.text);
+        if (!taken) return { success: false, error: 'Suggestion no longer exists' };
+        void recordPlannerSignal('dismissed', taken).catch(() => {});
+        todoBus.publish({ type: 'list_changed' });
+        return { success: true };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    'todo:getPlanner': async () => {
+      return getPlannerConfig();
+    },
+    'todo:setPlanner': async (_event, args) => {
+      return setPlannerConfig(args);
+    },
+    'todo:save': async (_event, args) => {
+      try {
+        const list = await saveTodo(args.list);
+        return { success: true, list };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    'todo:addItem': async (_event, args) => {
+      try {
+        const links = await importTodoAttachments(args.attachments ?? []);
+        const text = links.length > 0 ? `${args.text} ${todoLinksToText(links)}` : args.text;
+        const item = await addTodoItem(text);
+        if (args.run || item.delegated) {
+          void runTodoItem(item.key, undefined, { model: args.model, autoPermission: args.permissionMode !== 'manual', code: args.code }).catch(() => {});
+        }
+        todoBus.publish({ type: 'list_changed' });
+        return { success: true };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    'todo:runItem': async (_event, args) => {
+      try {
+        void runTodoItem(args.key, args.context, { model: args.model, autoPermission: args.permissionMode !== 'manual' }).catch(() => {});
+        return { success: true };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    'home:threads': async () => {
+      const tracker = container.resolve<HomeThreadsTracker>('homeThreadsTracker');
+      return { threads: await tracker.snapshot() };
+    },
+    'home:markSeen': async (_event, args) => {
+      try {
+        const tracker = container.resolve<HomeThreadsTracker>('homeThreadsTracker');
+        await tracker.markSeen(args.sessionId);
+        return { success: true };
+      } catch {
+        return { success: false };
+      }
+    },
+    'home:setPinned': async (_event, args) => {
+      try {
+        const tracker = container.resolve<HomeThreadsTracker>('homeThreadsTracker');
+        await tracker.setPinned(args.sessionId, args.pinned);
+        return { success: true };
+      } catch {
+        return { success: false };
+      }
+    },
+    'home:snooze': async (_event, args) => {
+      try {
+        const tracker = container.resolve<HomeThreadsTracker>('homeThreadsTracker');
+        await tracker.snooze(args.sessionId, args.hours);
+        return { success: true };
+      } catch {
+        return { success: false };
+      }
+    },
+    'home:dismiss': async (_event, args) => {
+      try {
+        const tracker = container.resolve<HomeThreadsTracker>('homeThreadsTracker');
+        await tracker.dismiss(args.sessionId);
+        return { success: true };
+      } catch {
+        return { success: false };
+      }
+    },
+    'home:commandCenter': async () => {
+      const { ensureCommandCenterSession } = await import('@x/core/dist/home/command-center.js');
+      const sessionId = await ensureCommandCenterSession(container.resolve<ISessions>('sessions'));
+      return { sessionId };
+    },
+    'todo:stopRun': async (_event, args) => {
+      try {
+        const stopped = await stopTodoRun(args.key);
+        return stopped ? { success: true } : { success: false, error: 'No live run to stop' };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    'todo:startChat': async (_event, args) => {
+      try {
+        const result = await startHomeChat(args.text);
+        return result.sessionId
+          ? { success: true, sessionId: result.sessionId }
+          : { success: false, error: result.error ?? 'Failed to start chat' };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    'todo:chatReply': async (_event, args) => {
+      try {
+        const links = await importTodoAttachments(args.attachments ?? []);
+        const message = links.length > 0 ? `${args.message}\n\nAttached: ${todoLinksToText(links)}` : args.message;
+        void replyHomeChat(args.sessionId, message, { model: args.model, autoPermission: args.permissionMode !== 'manual' }).catch(() => {});
+        return { success: true };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    'todo:getSessionConversation': async (_event, args) => {
+      const { bubbles } = await deriveSessionConversation(container.resolve<ISessions>('sessions'), args.sessionId);
+      return { bubbles };
+    },
+    'todo:addSubItem': async (_event, args) => {
+      try {
+        const links = await importTodoAttachments(args.attachments ?? []);
+        const text = links.length > 0 ? `${args.text} ${todoLinksToText(links)}` : args.text;
+        const child = await addTodoSubItem(args.parentKey, text);
+        if (!child) return { success: false, error: 'Parent not found' };
+        if (args.run || child.delegated) {
+          void runTodoItem(child.key, undefined, { model: args.model, autoPermission: args.permissionMode !== 'manual' }).catch(() => {});
+        }
+        todoBus.publish({ type: 'list_changed' });
+        return { success: true };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    'todo:getConversation': async (_event, args) => {
+      return getTodoConversation(container.resolve<ISessions>('sessions'), args.key);
+    },
+    'todo:comment': async (_event, args) => {
+      try {
+        const links = await importTodoAttachments(args.attachments ?? []);
+        const message = links.length > 0 ? `${args.message}\n\nAttached: ${todoLinksToText(links)}` : args.message;
+        void commentOnTodoItem(args.key, message, { model: args.model, autoPermission: args.permissionMode !== 'manual' }).catch(() => {});
+        return { success: true };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    'todo:clearCompleted': async () => {
+      try {
+        const archived = await clearTodoCompleted();
+        todoBus.publish({ type: 'list_changed' });
+        return { success: true, archived };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    'todo:dismiss': async (_event, args) => {
+      try {
+        // Dismissing a planner proposal is a learning signal.
+        const found = await findTodoItem(args.key).catch(() => null);
+        const ok = await dismissTodoItem(args.key);
+        if (ok && found?.item.proposed) {
+          void recordPlannerSignal('dismissed', found.item.text).catch(() => {});
+        }
+        todoBus.publish({ type: 'list_changed' });
+        return ok ? { success: true, wasProposed: !!found?.item.proposed } : { success: false, error: 'Item not found' };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    'todo:teach': async (_event, args) => {
+      try {
+        await addPlannerRule(`Don't suggest items like: "${args.text}"`);
+        void recordPlannerSignal('taught', args.text).catch(() => {});
+        return { success: true };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    'todo:listArchived': async () => {
+      return { items: await listTodoArchived() };
+    },
+    'todo:deleteArchived': async (_event, args) => {
+      try {
+        const ok = await deleteTodoArchived(args.month, args.blockIndex, args.key);
+        todoBus.publish({ type: 'list_changed' });
+        return ok ? { success: true } : { success: false, error: 'Item moved — refresh and retry' };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    'todo:restore': async (_event, args) => {
+      try {
+        const ok = await restoreTodoItem(args.month, args.blockIndex, args.key);
+        todoBus.publish({ type: 'list_changed' });
+        return ok ? { success: true } : { success: false, error: 'Item moved — refresh and retry' };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
     },
     // Bg-task handlers
     'bg-task:run': async (_event, args) => {
@@ -2958,7 +3455,23 @@ export function setupIpcHandlers() {
       await saveTurnLimitsSettings(args);
       return { success: true };
     },
+    'retention:getSettings': async () => {
+      return await loadRetentionSettings();
+    },
+    'retention:setSettings': async (_event, args) => {
+      await saveRetentionSettings(args);
+      return { success: true };
+    },
+    'retention:consumeFirstRunNotice': async () => {
+      const settings = await loadRetentionSettings();
+      if (settings.enabled && !settings.noticeShown) {
+        await saveRetentionSettings({ noticeShown: true });
+        return { show: true, chatDays: settings.chatDays };
+      }
+      return { show: false, chatDays: settings.chatDays };
+    },
     // Embedded browser handlers (WebContentsView + navigation)
     ...browserIpcHandlers,
+    ...spacesIpcHandlers,
   });
 }

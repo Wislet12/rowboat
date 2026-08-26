@@ -64,6 +64,10 @@ export const UserMessageContent = z.union([z.string(), z.array(UserContentPart)]
 
 export const UserMessageContext = z.object({
     currentDateTime: z.string().optional(),
+    // Set on the first message after a screen share stops: history keeps the
+    // captured frames inline forever (pruning would bust prefix caching), so
+    // the model must be told they show the past, not the current screen.
+    screenShareEnded: z.boolean().optional(),
     middlePane: z.discriminatedUnion("kind", [
         z.object({
             kind: z.literal("empty"),
@@ -132,6 +136,17 @@ export const UserMessageContext = z.object({
                 language: z.string().optional(),
             }).optional(),
             untrusted: z.boolean().optional(),
+        }),
+        // A .pptx open in the slide editor. Content is deliberately absent —
+        // a deck's content is what deck-review reads; carrying it on every
+        // message would bloat the turn. slideNumber is 1-BASED so it lines up
+        // with the deck tools' own slideNumber argument (the renderer does the
+        // +1 from its 0-based index).
+        z.object({
+            kind: z.literal("deck"),
+            path: z.string(),
+            slideNumber: z.number().int().min(1),
+            slideCount: z.number().int().min(1),
         }),
     ]).optional(),
 });

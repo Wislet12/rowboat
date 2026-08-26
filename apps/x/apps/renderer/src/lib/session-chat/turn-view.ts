@@ -21,6 +21,7 @@ import type {
   ErrorMessage,
   MessageAttachment,
   PermissionResponse,
+  ReasoningMessage,
   TokenUsage,
   ToolCall,
 } from '@/lib/chat-conversation'
@@ -75,7 +76,9 @@ const VOICE_OPEN_TAG = '<voice>'
 // Early speech: once an open block has this many unconsumed chars, its last
 // complete clause is emitted immediately instead of waiting for </voice> —
 // TTS starts on the first clause while the rest of the sentence generates.
-const EARLY_SPEECH_MIN_CHARS = 60
+// 40 (down from 60): voice-to-first-audio was the companion's biggest
+// perceived lag, and a shorter first clause is worth the prosody risk.
+const EARLY_SPEECH_MIN_CHARS = 40
 // ...but never emit a fragment shorter than this (prosody suffers).
 const EARLY_SPEECH_MIN_EMIT = 30
 // Clause boundaries (punctuation, optionally inside closing quote/paren,
@@ -279,22 +282,54 @@ export function buildTurnConversation(state: TurnState): ConversationItem[] {
   let seq = 0
   const ts = () => Date.parse(state.definition.ts) + seq++
 
-  const userText = extractText(state.definition.input.content)
-  const attachments = extractAttachments(state.definition.input.content)
-  if (userText || attachments) {
-    items.push({
-      id: `${turnId}:user`,
-      role: 'user',
-      content: userText,
-      timestamp: ts(),
-      ...(attachments ? { attachments } : {}),
-    } satisfies ChatMessage)
+  const pushUser = (
+    message: TurnState['definition']['input'],
+    idSuffix: string,
+  ) => {
+    const userText = extractText(message.content)
+    const attachments = extractAttachments(message.content)
+    if (userText || attachments) {
+      items.push({
+        id: `${turnId}:user${idSuffix}`,
+        role: 'user',
+        content: userText,
+        timestamp: ts(),
+        ...(attachments ? { attachments } : {}),
+      } satisfies ChatMessage)
+    }
+  }
+  pushUser(state.definition.input, '')
+  // Steered messages (input_added) render at the boundary the model saw
+  // them: before the model call that first transmitted them.
+  const pushAddedInputs = (boundary: number) => {
+    for (const added of state.addedInputs) {
+      if (added.firstAffectedModelCallIndex === boundary) {
+        pushUser(added.event.message, `:${added.event.inputIndex}`)
+      }
+    }
   }
 
   const toolCallsById = new Map(state.toolCalls.map((tc) => [tc.toolCallId, tc]))
   for (const call of state.modelCalls) {
+    pushAddedInputs(call.index)
     if (call.response === undefined) continue
     const content = call.response.content
+    // The model's thought process precedes what it produced. Encrypted-only
+    // reasoning has no text and yields no item.
+    const reasoning = Array.isArray(content)
+      ? content
+          .map((part) => (part.type === 'reasoning' ? part.text : ''))
+          .filter((text) => text.trim())
+          .join('\n\n')
+      : ''
+    if (reasoning) {
+      items.push({
+        id: `${turnId}:r${call.index}`,
+        kind: 'reasoning',
+        content: reasoning,
+        timestamp: ts(),
+      } satisfies ReasoningMessage)
+    }
     // Voice tags are model-facing markup, never shown (parity with the
     // legacy path's display-time strip).
     const text = stripVoiceTags(
@@ -330,6 +365,10 @@ export function buildTurnConversation(state: TurnState): ConversationItem[] {
       }
     }
   }
+
+  // Inputs accepted after the last requested call (turn stopped before the
+  // next request) still render — they were durably accepted.
+  pushAddedInputs(state.modelCalls.length)
 
   if (state.terminal?.type === 'turn_failed') {
     // Interactive turns normally wrap up gracefully before hitting the
@@ -371,6 +410,10 @@ type PermMeta = z.infer<typeof ToolPermissionMetadata>
 export type SessionChatState = {
   conversation: ConversationItem[]
   currentAssistantMessage: string
+  // Reasoning text streaming for the in-flight model call; the durable
+  // reasoning item supersedes it when the call completes (same lifecycle as
+  // currentAssistantMessage).
+  currentReasoning: string
   sessionUsage: TokenUsage
   // See LiveOverlay.voiceSegments.
   voiceSegments: string[]
@@ -387,6 +430,10 @@ export type SessionChatState = {
   // Kept separate from processing so permission/ask-human controls remain
   // interactive while the turn is suspended for user input.
   isWaitingOnHuman: boolean
+  // The latest turn's model selection — resolved model + the reasoning
+  // effort it ran with. A reopened session's composer restores its
+  // selection from this (settings only seed brand-new chats).
+  lastSelection: { provider: string; model: string; effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra' } | null
 }
 
 function toolCallPartOf(tc: ToolCallState) {
@@ -399,10 +446,11 @@ function toolCallPartOf(tc: ToolCallState) {
 }
 
 // An unresolved permission is not necessarily waiting on the user. In auto
-// mode the classifier advances it without human input unless it defers (or
-// cannot classify the request). Keeping this distinction here prevents both
-// a transient permission card and a false human-wait state while the classifier
-// is working.
+// mode the classifier advances it without human input unless it defers,
+// denies (a deny with a human available escalates to them rather than
+// resolving), or cannot classify the request. Keeping this distinction here
+// prevents both a transient permission card and a false human-wait state
+// while the classifier is working.
 function permissionNeedsHuman(state: TurnState, tc: ToolCallState): boolean {
   if (!state.definition.config.humanAvailable) return false
   if (!state.definition.config.autoPermission) return true
@@ -410,7 +458,8 @@ function permissionNeedsHuman(state: TurnState, tc: ToolCallState): boolean {
   return (
     permission?.required.checkerError !== undefined ||
     permission?.classificationFailed === true ||
-    permission?.classification?.decision === 'defer'
+    permission?.classification?.decision === 'defer' ||
+    permission?.classification?.decision === 'deny'
   )
 }
 
@@ -488,25 +537,35 @@ export function buildSessionChatState(
     }
     for (const tc of outstandingAsyncTools(latest)) {
       if (tc.toolName !== 'ask-human') continue
-      const input = (tc.input ?? {}) as { question?: unknown; options?: unknown }
+      const input = (tc.input ?? {}) as { question?: unknown; options?: unknown; multiSelect?: unknown }
+      const hasOptions = Array.isArray(input.options) && input.options.every((o) => typeof o === 'string')
       pendingAskHumanRequests.set(tc.toolCallId, {
         runId: latestTurnId,
         type: 'ask-human-request',
         toolCallId: tc.toolCallId,
         subflow: [],
         query: typeof input.question === 'string' ? input.question : '',
-        ...(Array.isArray(input.options) && input.options.every((o) => typeof o === 'string')
-          ? { options: input.options }
-          : {}),
+        ...(hasOptions ? { options: input.options as string[] } : {}),
+        ...(hasOptions && input.multiSelect === true ? { multiSelect: true } : {}),
       })
     }
   }
 
   const settled = status === 'completed' || status === 'failed' || status === 'cancelled'
   const waitingOnHuman = allPermissionRequests.size > 0 || pendingAskHumanRequests.size > 0
+  const lastModel = latest?.definition.agent.resolved.model
+  const lastEffort = latest?.definition.config.reasoningEffort
   return {
+    lastSelection: lastModel
+      ? {
+          provider: lastModel.provider,
+          model: lastModel.model,
+          ...(lastEffort ? { effort: lastEffort } : {}),
+        }
+      : null,
     conversation,
     currentAssistantMessage: stripVoiceTags(overlay.text),
+    currentReasoning: overlay.reasoning,
     sessionUsage,
     voiceSegments: overlay.voiceSegments,
     pendingAskHumanRequests,

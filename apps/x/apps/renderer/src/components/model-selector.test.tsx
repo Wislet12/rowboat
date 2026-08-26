@@ -60,26 +60,26 @@ describe('ModelSelector', () => {
       }],
       defaultModel: { provider: 'codex', model: 'gpt-5.6-sol' },
     })
-    const onEffortChange = vi.fn()
+    const onChange = vi.fn()
     render(
       <ModelSelector
         variant="pill"
-        value={{ provider: 'codex', model: 'gpt-5.6-sol' }}
-        onChange={() => {}}
-        effort="low"
-        onEffortChange={onEffortChange}
+        value={{ provider: 'codex', model: 'gpt-5.6-sol', effort: 'low' }}
+        onChange={onChange}
+        lockedModel={{ provider: 'codex', model: 'gpt-5.6-sol' }}
+        effortSelectable
       />,
     )
 
     const effortButton = await screen.findByRole('button', { name: /Fast/ })
-    fireEvent.pointerDown(effortButton, { button: 0, ctrlKey: false })
+    fireEvent.click(effortButton)
 
     expect(await screen.findByText('X-High')).toBeInTheDocument()
     expect(screen.getByText('Max')).toBeInTheDocument()
     const ultra = screen.getByText('Ultra')
     expect(ultra).toBeInTheDocument()
     fireEvent.click(ultra)
-    expect(onEffortChange).toHaveBeenCalledWith('ultra')
+    expect(onChange).toHaveBeenCalledWith({ provider: 'codex', model: 'gpt-5.6-sol', effort: 'ultra' })
   })
 
   it('renders the defaultOption label when value is null and round-trips null through onChange', async () => {

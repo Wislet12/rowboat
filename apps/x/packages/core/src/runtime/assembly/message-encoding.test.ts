@@ -29,7 +29,6 @@ describe('clipboard screenshot message encoding', () => {
     })
   })
 })
-
 describe('active note context encoding', () => {
   it('replaces the previous note snapshot when the user switches notes', () => {
     const encoded = convertFromMessages([
@@ -286,5 +285,42 @@ describe('active browser context encoding', () => {
     expect(wire).toContain('NEW SELECTED TEXT')
     expect(wire).toContain('untrusted data')
     expect(wire).toContain('new-tab')
+  })
+})
+
+
+describe('deck context encoding', () => {
+  it('renders the selected slide without displacing active-note isolation', () => {
+    const [encoded] = convertFromMessages([{
+      role: 'user',
+      content: 'Update this slide',
+      userMessageContext: {
+        middlePane: {
+          kind: 'deck',
+          path: 'presentations/Q3 review.pptx',
+          slideNumber: 2,
+          slideCount: 9,
+        },
+      },
+    }] as Parameters<typeof convertFromMessages>[0])
+    const content = typeof encoded.content === 'string' ? encoded.content : JSON.stringify(encoded.content)
+    expect(content).toContain('State: deck')
+    expect(content).toContain('Path: presentations/Q3 review.pptx')
+    expect(content).toContain('Slide: 2 of 9')
+    expect(content).toContain('# User Message')
+  })
+
+  it('reports that sharing ended before any active pane snapshot', () => {
+    const [encoded] = convertFromMessages([{
+      role: 'user',
+      content: 'What is on my screen?',
+      userMessageContext: {
+        screenShareEnded: true,
+        middlePane: { kind: 'empty' },
+      },
+    }] as Parameters<typeof convertFromMessages>[0])
+    const content = typeof encoded.content === 'string' ? encoded.content : JSON.stringify(encoded.content)
+    expect(content).toContain('Screen sharing has ENDED')
+    expect(content).toContain('State: empty')
   })
 })

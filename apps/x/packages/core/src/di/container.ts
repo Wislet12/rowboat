@@ -26,8 +26,12 @@ import { FSCodeProjectsRepo, ICodeProjectsRepo } from "../code-mode/projects/rep
 import { FSCodeSessionsRepo, ICodeSessionsRepo } from "../code-mode/sessions/repo.js";
 import { CodeSessionService } from "../code-mode/sessions/service.js";
 import { CodeSessionStatusTracker } from "../code-mode/sessions/status-tracker.js";
+import { HomeThreadsTracker } from "../home/threads.js";
+import { getCommandCenterSessionId } from "../home/command-center.js";
 import type { IBrowserControlService } from "../application/browser-control/service.js";
 import type { INotificationService } from "../application/notification/service.js";
+import type { IScreenPointerService } from "../application/screen-pointer/service.js";
+import type { ITextInsertService } from "../application/text-insert/service.js";
 import { SystemClock, type IClock } from "../runtime/turns/clock.js";
 import { FSTurnRepo } from "../runtime/turns/fs-repo.js";
 import type { ITurnRepo } from "../runtime/turns/repo.js";
@@ -55,6 +59,7 @@ import type { ISessionRepo } from "../runtime/sessions/repo.js";
 import { EmitterSessionBus, type ISessionBus } from "../runtime/sessions/bus.js";
 import { SessionsImpl } from "../runtime/sessions/sessions.js";
 import type { ISessions } from "../runtime/sessions/api.js";
+import type { JsonValue } from "@x/shared/dist/turns.js";
 import {
     DefaultModelResolver,
     type IDefaultModelResolver,
@@ -107,12 +112,17 @@ container.register({
     // durable record is the settle-time code-run-events-batch).
     codeRunFeed: asClass(CodeRunFeed).singleton(),
 
-    // Code section: project registry, session metadata, the direct-drive
-    // session service, and the live status tracker.
+    // Code section: project registry, session metadata, the session service
+    // (meta + workspace lifecycle; the conversation is an ordinary chat
+    // session), and the live status tracker.
     codeProjectsRepo: asClass<ICodeProjectsRepo>(FSCodeProjectsRepo).singleton(),
     codeSessionsRepo: asClass<ICodeSessionsRepo>(FSCodeSessionsRepo).singleton(),
     codeSessionService: asClass(CodeSessionService).singleton(),
     codeSessionStatusTracker: asClass(CodeSessionStatusTracker).singleton(),
+
+    // Home's thread registry (the Deck): live per-session status from the
+    // turn event spine + composition over sessions/todo/code-session state.
+    homeThreadsTracker: asClass(HomeThreadsTracker).singleton(),
 
     // New turn/session runtime (turn-runtime-design.md / session-design.md).
     // Bridges are constructed via asFunction so their optional test seams
@@ -128,7 +138,9 @@ container.register({
     // Process-wide turn event spine: every turn's events, tagged with
     // sessionId and durable file offsets, regardless of who started the turn.
     turnEventBus: asClass<ITurnEventBus>(TurnEventHub).singleton(),
-    usageReporter: asClass<IUsageReporter>(RealUsageReporter).singleton(),
+    usageReporter: asFunction<IUsageReporter>(
+        () => new RealUsageReporter(),
+    ).singleton(),
     agentResolver: asFunction<IAgentResolver>(
         () =>
             new DispatchingAgentResolver(
@@ -144,6 +156,32 @@ container.register({
     sessionRepo: asClass<ISessionRepo>(FSSessionRepo).singleton(),
     sessionBus: asClass<ISessionBus>(EmitterSessionBus).singleton(),
     sessions: asClass<ISessions>(SessionsImpl).singleton(),
+    // Session-identity composition pins, applied server-side so no surface
+    // (voice/quick-ask/composer) has to know what a session IS:
+    // - Code sessions pin their coding agent + working directory.
+    // - The Command Center session pins the operator frame — directives on
+    //   that one conversation are operations on Home (to-dos, dispatch,
+    //   status), never "just chat".
+    // Null for ordinary chats.
+    sessionCompositionPins: asFunction(
+        ({ codeSessionsRepo }: { codeSessionsRepo: ICodeSessionsRepo }) =>
+            async (sessionId: string): Promise<Record<string, JsonValue> | null> => {
+                const pins: Record<string, JsonValue> = {};
+                const meta = await codeSessionsRepo.get(sessionId).catch(() => null);
+                if (meta) {
+                    pins.codeMode = meta.agent;
+                    pins.codeCwd = meta.cwd;
+                }
+                // Hot path (every turn) — the pointer is memory-cached in
+                // the module, and the import is static so the edge shows in
+                // the module graph.
+                const commandCenterId = await getCommandCenterSessionId().catch(() => null);
+                if (commandCenterId && commandCenterId === sessionId) {
+                    pins.commandCenter = true;
+                }
+                return Object.keys(pins).length > 0 ? pins : null;
+            },
+    ).singleton(),
     defaultModelResolver:
         asClass<IDefaultModelResolver>(DefaultModelResolver).singleton(),
     headlessAgentRunner:
@@ -161,5 +199,17 @@ export function registerBrowserControlService(service: IBrowserControlService): 
 export function registerNotificationService(service: INotificationService): void {
     container.register({
         notificationService: asValue(service),
+    });
+}
+
+export function registerScreenPointerService(service: IScreenPointerService): void {
+    container.register({
+        screenPointerService: asValue(service),
+    });
+}
+
+export function registerTextInsertService(service: ITextInsertService): void {
+    container.register({
+        textInsertService: asValue(service),
     });
 }

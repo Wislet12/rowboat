@@ -1,4 +1,4 @@
-import { LlmModelConfig, LlmProvider, ModelRef, TaskModels } from "@x/shared/dist/models.js";
+import { LlmModelConfig, LlmProvider, ModelRef, ModelSelection, TaskModels } from "@x/shared/dist/models.js";
 import { WorkDir } from "../config/config.js";
 import { isSignedIn } from "../account/account.js";
 import { capture } from "../analytics/posthog.js";
@@ -13,14 +13,18 @@ import path from "path";
 import z from "zod";
 
 type Config = z.infer<typeof LlmModelConfig>;
+// Selections are stored as ModelSelection (ref + the effort picked with it).
+type Choice = z.infer<typeof ModelSelection>;
+// The image model is a bare ref: image models take no reasoning effort.
 type Ref = z.infer<typeof ModelRef>;
-type TaskModelPatch = { [K in keyof z.infer<typeof TaskModels>]?: Ref | null };
+type TaskModelPatch = { [K in keyof z.infer<typeof TaskModels>]?: Choice | null };
 
 // Top-level merge patch: omitted keys are untouched; an explicit null clears
 // a key. taskModels merges per-key (null clears that task's override).
 export type ModelConfigPatch = {
-    assistantModel?: Ref | null;
+    assistantModel?: Choice | null;
     taskModels?: TaskModelPatch;
+    imageModel?: Ref | null;
     deferBackgroundTasks?: boolean | null;
 };
 
@@ -129,6 +133,9 @@ export class FSModelConfigRepo implements IModelConfigRepo {
         if (config.assistantModel?.provider === id) {
             delete config.assistantModel;
         }
+        if (config.imageModel?.provider === id) {
+            delete config.imageModel;
+        }
         if (config.taskModels) {
             for (const key of Object.keys(config.taskModels) as Array<keyof NonNullable<Config["taskModels"]>>) {
                 if (config.taskModels[key]?.provider === id) {
@@ -156,6 +163,10 @@ export class FSModelConfigRepo implements IModelConfigRepo {
             }
             if (Object.keys(merged).length > 0) config.taskModels = merged;
             else delete config.taskModels;
+        }
+        if (patch.imageModel !== undefined) {
+            if (patch.imageModel === null) delete config.imageModel;
+            else config.imageModel = patch.imageModel;
         }
         if (patch.deferBackgroundTasks !== undefined) {
             if (patch.deferBackgroundTasks === null) delete config.deferBackgroundTasks;

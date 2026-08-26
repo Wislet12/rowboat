@@ -1,5 +1,5 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Archive, Bold, CheckCheck, Forward, Italic, Link as LinkIcon, List, ListOrdered, LoaderIcon, Mail, Paperclip, Quote, Redo2, RefreshCw, Reply, ReplyAll, Search, Send, SlidersHorizontal, Sparkles, SquarePen, Star, StarOff, Strikethrough, Trash2, Undo2, X } from 'lucide-react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Archive, Bold, BookUser, CheckCheck, Forward, Italic, Link as LinkIcon, List, ListOrdered, LoaderIcon, Mail, Paperclip, Quote, Redo2, RefreshCw, Reply, ReplyAll, Search, Send, SlidersHorizontal, Sparkles, SquarePen, Star, StarOff, Strikethrough, Trash2, Undo2, X } from 'lucide-react'
 import { useEditor, EditorContent, type Editor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Link from '@tiptap/extension-link'
@@ -96,6 +96,55 @@ function avatarColor(from?: string): string {
 
 function latestMessage(thread: GmailThread): GmailThreadMessage | undefined {
   return thread.messages[thread.messages.length - 1]
+}
+
+// Date dividers inside the Important subsections. All buckets are calendar
+// buckets: "This week" runs from the most recent Sunday, not a rolling 7
+// days — on a Thursday, last Friday files under Earlier. Yesterday wins over
+// the week bucket when they straddle the Sunday boundary.
+type DateBucket = 'today' | 'yesterday' | 'week' | 'earlier'
+
+const DATE_BUCKET_LABELS: Record<DateBucket, string> = {
+  today: 'Today',
+  yesterday: 'Yesterday',
+  week: 'This week',
+  earlier: 'Earlier',
+}
+
+function dateBucketOf(value?: string): DateBucket {
+  if (!value) return 'earlier'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'earlier'
+  const now = new Date()
+  if (date.toDateString() === now.toDateString()) return 'today'
+  const yesterday = new Date(now)
+  yesterday.setDate(now.getDate() - 1)
+  if (date.toDateString() === yesterday.toDateString()) return 'yesterday'
+  const weekStart = new Date(now)
+  weekStart.setDate(now.getDate() - now.getDay())
+  weekStart.setHours(0, 0, 0, 0)
+  if (date.getTime() >= weekStart.getTime()) return 'week'
+  return 'earlier'
+}
+
+function withDateDividers(threads: GmailThread[], renderThread: (thread: GmailThread) => ReactNode): ReactNode[] {
+  const out: ReactNode[] = []
+  let prev: DateBucket | null = null
+  threads.forEach((thread, index) => {
+    const bucket = dateBucketOf(latestMessage(thread)?.date || thread.date)
+    if (bucket !== prev) {
+      prev = bucket
+      // Keyed by position too: threads arrive newest-first, but a stray
+      // out-of-order thread would repeat a bucket.
+      out.push(
+        <div key={`bucket-${bucket}-${index}`} className="gmail-date-divider">
+          {DATE_BUCKET_LABELS[bucket]}
+        </div>,
+      )
+    }
+    out.push(renderThread(thread))
+  })
+  return out
 }
 
 // The label set (chips, filter pills, correction dropdown) comes from the
@@ -203,6 +252,44 @@ function dedupeRecipients(tokens: string[], exclude: Set<string>): string[] {
     if (!addr || seen.has(addr)) continue
     seen.add(addr)
     out.push(token)
+  }
+  return out
+}
+
+// A person on the thread who has a knowledge note. Mirrors the
+// `meeting-prep:resolve` IPC response (people only — orgs are ignored here).
+type ThreadPersonNote = {
+  label: string
+  path: string
+  role?: string
+  organization?: string
+}
+
+// Everyone on the thread (from/to/cc across all messages) as resolve-ready
+// attendees, deduped by address. `self` marks the connected account so the
+// resolver skips the user's own note.
+function collectThreadParticipants(thread: GmailThread, selfEmail: string): { email?: string; displayName?: string; self?: boolean }[] {
+  const seen = new Set<string>()
+  const out: { email?: string; displayName?: string; self?: boolean }[] = []
+  const self = selfEmail.trim().toLowerCase()
+  for (const message of thread.messages) {
+    const tokens = [
+      ...(message.from ? [message.from] : []),
+      ...splitAddresses(message.to),
+      ...splitAddresses(message.cc),
+    ]
+    for (const token of tokens) {
+      const address = extractAddress(token).trim()
+      const email = address.includes('@') ? address.toLowerCase() : ''
+      if (!email || seen.has(email)) continue
+      seen.add(email)
+      const named = token.match(/^\s*"?([^"<]+?)"?\s*<[^>]+>\s*$/)
+      out.push({
+        email,
+        displayName: named?.[1]?.trim() || undefined,
+        self: self !== '' && email === self,
+      })
+    }
   }
   return out
 }
@@ -1889,7 +1976,7 @@ const ComposeBox = memo(function ComposeBox({
             size="sm"
             onClick={() => { void sendInGmail() }}
             disabled={sending}
-            title={isNew ? 'Send this email via Gmail' : 'Send this reply via Gmail'}
+            title={isNew ? 'Send this email' : 'Send this reply'}
           >
             {sending ? <LoaderIcon className="size-4 animate-spin" /> : <Send className="size-4" />}
             {sending ? 'Sending…' : 'Send'}
@@ -2005,6 +2092,7 @@ function ThreadDetail({
   onComposingChange,
   onSetCategory,
   labels = BUILTIN_LABELS,
+  onOpenNote,
 }: {
   thread: GmailThread
   onClose: () => void
@@ -2017,9 +2105,15 @@ function ThreadDetail({
   onSetCategory?: (threadId: string, category: EmailCategory) => Promise<void>
   /** The label registry (built-ins + user-defined) for the chip and correction dropdown. */
   labels?: EmailLabelInfo[]
+  /** Opens a knowledge note (workspace-relative path); enables the people strip. */
+  onOpenNote?: (path: string) => void
 }) {
   const [composeMode, setComposeMode] = useState<ComposeMode | null>(null)
   const [selfEmail, setSelfEmail] = useState<string>('')
+  // null until gmail:getAccountEmail settles — the people lookup waits so the
+  // user's own note never flashes in as a chip.
+  const [selfEmailLoaded, setSelfEmailLoaded] = useState(false)
+  const [peopleNotes, setPeopleNotes] = useState<ThreadPersonNote[]>([])
   const [expandedIndices, setExpandedIndices] = useState<Set<number>>(
     () => new Set(thread.messages.length > 0 ? [thread.messages.length - 1] : [])
   )
@@ -2030,8 +2124,44 @@ function ThreadDetail({
     window.ipc.invoke('gmail:getAccountEmail', {})
       .then((res) => { if (!cancelled && res?.email) setSelfEmail(res.email) })
       .catch(() => {})
+      .finally(() => { if (!cancelled) setSelfEmailLoaded(true) })
     return () => { cancelled = true }
   }, [])
+
+  // Match everyone on the thread against the knowledge base (same deterministic
+  // email-then-name resolver the meeting prep card uses) so people with a note
+  // are one click away from it. Keyed on the participant signature, not the
+  // thread object — sync ticks swap thread identity without changing who's on it.
+  const participants = useMemo(() => collectThreadParticipants(thread, selfEmail), [thread, selfEmail])
+  const participantsKey = useMemo(
+    () => participants.map((p) => (p.self ? '!' : '') + p.email).join(','),
+    [participants],
+  )
+  const participantsRef = useRef(participants)
+  participantsRef.current = participants
+  useEffect(() => {
+    if (!onOpenNote || !selfEmailLoaded) return
+    const attendees = participantsRef.current
+    if (attendees.length === 0) {
+      setPeopleNotes([])
+      return
+    }
+    let cancelled = false
+    window.ipc.invoke('meeting-prep:resolve', { attendees })
+      .then((res) => {
+        if (cancelled) return
+        setPeopleNotes(res.attendees
+          .filter((a) => a.note != null)
+          .map((a) => ({
+            label: a.note!.name || a.label,
+            path: a.note!.path,
+            role: a.note!.role,
+            organization: a.note!.organization,
+          })))
+      })
+      .catch(() => { if (!cancelled) setPeopleNotes([]) })
+    return () => { cancelled = true }
+  }, [participantsKey, selfEmailLoaded, onOpenNote])
 
   const replyAllRecipients = useMemo(
     () => buildRecipients('replyAll', thread, selfEmail),
@@ -2134,6 +2264,22 @@ function ThreadDetail({
             <span className="gmail-thread-summary-text">{thread.summary}</span>
           </div>
         )}
+        {peopleNotes.length > 0 && onOpenNote && (
+          <div className="gmail-thread-people">
+            {peopleNotes.map((person) => (
+              <button
+                key={person.path}
+                type="button"
+                className="gmail-thread-person"
+                title={[person.role, person.organization].filter(Boolean).join(' · ') || 'Open note'}
+                onClick={() => onOpenNote(person.path)}
+              >
+                <BookUser size={13} />
+                {person.label}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="gmail-message-stack">
           {thread.messages.map((message, index) => {
             const isExpanded = expandedIndices.has(index)
@@ -2226,6 +2372,7 @@ const ThreadRow = memo(function ThreadRow({
   onHoverOut,
   onCloseThread,
   onComposingChange,
+  onOpenNote,
 }: {
   thread: GmailThread
   isSelected: boolean
@@ -2250,6 +2397,8 @@ const ThreadRow = memo(function ThreadRow({
   onHoverOut: () => void
   onCloseThread: () => void
   onComposingChange: (composing: boolean) => void
+  /** Opens a knowledge note — forwarded to ThreadDetail's people strip. */
+  onOpenNote?: (path: string) => void
 }) {
   const latest = latestMessage(thread)
   const isUnread = thread.unread === true
@@ -2281,7 +2430,7 @@ const ThreadRow = memo(function ThreadRow({
           <span className="gmail-row-sender">{extractName(latest?.from || thread.from)}</span>
           <span className="gmail-row-content">
             <strong>{thread.summary || thread.subject || '(No subject)'}</strong>
-            <span>{thread.summary ? thread.subject : snippet(latest?.body || thread.latest_email)}</span>
+            <span>{thread.summary ? thread.subject : snippet(thread.preview || latest?.body || thread.latest_email)}</span>
             {categoryChip && <span className="gmail-row-chip">{categoryChip}</span>}
             {chip && <span className={cn('gmail-row-chip', chipWaiting ? 'gmail-row-chip-waiting' : 'gmail-row-chip-ready')}>{chip}</span>}
           </span>
@@ -2339,6 +2488,7 @@ const ThreadRow = memo(function ThreadRow({
           onComposingChange={onComposingChange}
           onSetCategory={onSetCategory}
           labels={labels}
+          onOpenNote={onOpenNote}
         />
       )}
     </div>
@@ -2547,9 +2697,12 @@ export type EmailViewProps = {
   initialSearchQuery?: string | null
   /** Bump to re-apply the same search query. */
   searchQueryVersion?: number
+  /** Opens a knowledge note (workspace-relative path) — enables the "people on
+   *  this email with a note" strip in the thread view. */
+  onOpenNote?: (path: string) => void
 }
 
-export function EmailView({ initialThreadId, threadIdVersion, initialSearchQuery, searchQueryVersion }: EmailViewProps = {}) {
+export function EmailView({ initialThreadId, threadIdVersion, initialSearchQuery, searchQueryVersion, onOpenNote }: EmailViewProps = {}) {
   const [important, setImportant] = useState<SectionState>(() => clearLoadingFlag(persistedImportant))
   const [other, setOther] = useState<SectionState>(() => clearLoadingFlag(persistedOther))
   const hadPersistedDataOnMount = useRef(persistedImportant !== null)
@@ -2928,12 +3081,12 @@ export function EmailView({ initialThreadId, threadIdVersion, initialSearchQuery
   // reload to be discarded whenever Other was reloaded in the same tick.)
   const epochsRef = useRef<Record<InboxSection, number>>({ important: 0, other: 0 })
 
-  const fetchSectionPage = useCallback(async (section: InboxSection, cursor?: string) => {
+  const fetchSectionPage = useCallback(async (section: InboxSection, cursor?: string, limit: number = PAGE_SIZE) => {
     const result = section === 'important'
-      ? await window.ipc.invoke('gmail:getImportant', { cursor, limit: PAGE_SIZE })
+      ? await window.ipc.invoke('gmail:getImportant', { cursor, limit })
       : await window.ipc.invoke('gmail:getEverythingElse', {
           cursor,
-          limit: PAGE_SIZE,
+          limit,
           category: otherCategoryRef.current ?? undefined,
         })
     // Counts describe the whole 'other' section regardless of filter/page —
@@ -2966,20 +3119,47 @@ export function EmailView({ initialThreadId, threadIdVersion, initialSearchQuery
     }
   }, [important, other, setSection, fetchSectionPage])
 
+  // Section states mirrored into refs so reloadFirstPage can read the current
+  // pagination depth without depending on them (its identity must stay stable
+  // for the watcher effect).
+  const importantRef = useRef(important)
+  importantRef.current = important
+  const otherRef = useRef(other)
+  otherRef.current = other
+
   const reloadFirstPage = useCallback(async (section: InboxSection, options: { silent?: boolean } = {}) => {
     const epoch = ++epochsRef.current[section]
+    // A silent live reload must refresh the list AT ITS CURRENT DEPTH, not
+    // reset it to page 1: replacing a deep-scrolled list with one page
+    // shrinks the scroller, which clamps scrollTop — the list visibly lurches
+    // upward mid-scroll. (The watcher fires on any inbox_lists/ write —
+    // mark-read mirrors, body-height saves — not just new mail.) So walk
+    // pages until the previously-loaded depth is re-covered, then swap the
+    // array once.
+    const prevDepth = options.silent
+      ? (section === 'important' ? importantRef.current : otherRef.current).threads.length
+      : 0
     if (options.silent) {
       setSection(section, (prev) => ({ ...prev, loadingPage: true }))
     } else {
       setSection(section, () => ({ ...initialSectionState, loadingPage: true }))
     }
     try {
-      const result = await fetchSectionPage(section)
-      if (epoch !== epochsRef.current[section]) return
+      const threads: GmailThread[] = []
+      let nextCursor: string | null = null
+      let cursor: string | undefined
+      do {
+        const limit = Math.min(100, Math.max(PAGE_SIZE, prevDepth - threads.length))
+        const result = await fetchSectionPage(section, cursor, limit)
+        if (epoch !== epochsRef.current[section]) return
+        threads.push(...result.threads)
+        nextCursor = result.nextCursor
+        cursor = result.nextCursor ?? undefined
+      } while (cursor && threads.length < prevDepth)
       setSection(section, () => ({
-        threads: result.threads,
-        nextCursor: result.nextCursor,
-        hasReachedEnd: result.nextCursor === null,
+        threads,
+        nextCursor,
+        hasReachedEnd: nextCursor === null,
         loadingPage: false,
       }))
     } catch (err) {
@@ -3029,7 +3209,7 @@ export function EmailView({ initialThreadId, threadIdVersion, initialSearchQuery
       } else {
         analytics.emailCategoryArchived(category)
         toast(
-          `Archived ${result.archived} thread${result.archived === 1 ? '' : 's'}${result.failed ? ` (${result.failed} failed)` : ''}. They stay searchable in Gmail.`,
+          `Archived ${result.archived} thread${result.archived === 1 ? '' : 's'}${result.failed ? ` (${result.failed} failed)` : ''}. They stay searchable in your mailbox.`,
           result.failed ? 'error' : 'success',
         )
       }
@@ -3480,6 +3660,7 @@ export function EmailView({ initialThreadId, threadIdVersion, initialSearchQuery
         onHoverOut={cancelHoverPrefetch}
         onCloseThread={closeThread}
         onComposingChange={setActiveThreadComposing}
+        onOpenNote={onOpenNote}
       />
     )
   }
@@ -3637,7 +3818,7 @@ export function EmailView({ initialThreadId, threadIdVersion, initialSearchQuery
                     {visibleNeedsYou.length}{important.hasReachedEnd ? '' : '+'} thread{visibleNeedsYou.length === 1 ? '' : 's'}
                   </span>
                 </div>
-                {visibleNeedsYou.map((t) => renderRow(t, 'important', t.draft_response ? 'Reply ready' : null))}
+                {withDateDividers(visibleNeedsYou, (t) => renderRow(t, 'important', t.draft_response ? 'Reply ready' : null))}
               </section>
             ) : important.hasReachedEnd && !important.loadingPage ? (
               <div className="gmail-caughtup">You’re caught up — nothing needs a reply.</div>
@@ -3650,7 +3831,7 @@ export function EmailView({ initialThreadId, threadIdVersion, initialSearchQuery
                     {visibleWaiting.length}{important.hasReachedEnd ? '' : '+'} thread{visibleWaiting.length === 1 ? '' : 's'}
                   </span>
                 </div>
-                {visibleWaiting.map((t) => renderRow(t, 'important', waitingChip(t), true))}
+                {withDateDividers(visibleWaiting, (t) => renderRow(t, 'important', waitingChip(t), true))}
               </section>
             )}
             {/* Pages of "Important" feed both sections above, so the sentinel
@@ -3725,7 +3906,7 @@ export function EmailView({ initialThreadId, threadIdVersion, initialSearchQuery
             <Mail size={28} className="opacity-50" />
             <p>
               {needsEmailReconnect
-                ? 'Reconnect your email to enable Gmail sync and actions.'
+                ? 'Reconnect your email to enable sync and actions.'
                 : 'Connect your email to see your inbox here.'}
             </p>
             <button
@@ -3739,7 +3920,7 @@ export function EmailView({ initialThreadId, threadIdVersion, initialSearchQuery
           </div>
         ) : (
           <div className="gmail-empty-state">
-            {initialLoading ? 'Loading Gmail threads…' : 'No Gmail threads in your inbox cache yet.'}
+            {initialLoading ? 'Loading email threads…' : 'No email threads in your inbox cache yet.'}
           </div>
         )}
       </div>

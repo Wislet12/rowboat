@@ -8,6 +8,9 @@ import { WorkDir } from '../config/config.js';
 import { withFileLock } from '../knowledge/file-lock.js';
 import { commitAll } from '../knowledge/version_history.js';
 import { rewriteWikiLinksForRenamedKnowledgeFile } from '../workspace/wiki-link-rewrite.js';
+import { assertEtagMatches, computeEtag, EtagMismatchError, isEtagMismatchError } from './etag.js';
+
+export { computeEtag, EtagMismatchError, isEtagMismatchError };
 
 export type FileOperation = 'read' | 'list' | 'search' | 'write' | 'delete';
 
@@ -154,10 +157,6 @@ export async function resolveFilePathForPermission(inputPath: string): Promise<C
     isInsideWorkspace,
     workspaceRelPath,
   };
-}
-
-export function computeEtag(size: number, mtimeMs: number): string {
-  return `${size}:${mtimeMs}`;
 }
 
 function statToSchema(stats: Stats): FileStat {
@@ -388,14 +387,23 @@ export async function readText(inputPath: string, offset?: number, limit?: numbe
   };
 }
 
-export async function readBuffer(inputPath: string): Promise<{ buffer: Buffer; path: string; resolvedPath: string; isInsideWorkspace: boolean }> {
+// Returns the etag alongside the bytes so a read → modify → write caller can
+// make its write transactional (`writeBuffer(..., { expectedEtag })`). The
+// stat is taken BEFORE the read on purpose: an external write landing between
+// the two then yields a stale etag for the new bytes and the guard refuses the
+// write (safe), whereas stat-after-read would pair the OLD bytes with the NEW
+// etag and let the write clobber whatever landed in between.
+export async function readBuffer(inputPath: string): Promise<{ buffer: Buffer; path: string; resolvedPath: string; isInsideWorkspace: boolean; stat: FileStat; etag: string }> {
   const resolved = resolveFilePath(inputPath);
+  const stats = await fs.lstat(resolved.resolvedPath);
   const buffer = await fs.readFile(resolved.resolvedPath);
   return {
     buffer,
     path: resolved.originalPath,
     resolvedPath: resolved.resolvedPath,
     isInsideWorkspace: resolved.isInsideWorkspace,
+    stat: statToSchema(stats),
+    etag: computeEtag(stats.size, stats.mtimeMs),
   };
 }
 
@@ -410,11 +418,7 @@ export async function writeText(inputPath: string, data: string, opts?: WriteTex
 
   const result = await withFileLock(resolved.resolvedPath, async () => {
     if (opts?.expectedEtag) {
-      const existingStats = await fs.lstat(resolved.resolvedPath);
-      const existingEtag = computeEtag(existingStats.size, existingStats.mtimeMs);
-      if (existingEtag !== opts.expectedEtag) {
-        throw new Error('File was modified (ETag mismatch)');
-      }
+      await assertEtagMatches(resolved.resolvedPath, opts.expectedEtag);
     }
 
     const buffer = Buffer.from(data, 'utf8');
@@ -431,6 +435,43 @@ export async function writeText(inputPath: string, data: string, opts?: WriteTex
   });
 
   scheduleKnowledgeCommitIfNeeded(resolved);
+  return {
+    path: resolved.originalPath,
+    resolvedPath: resolved.resolvedPath,
+    isInsideWorkspace: resolved.isInsideWorkspace,
+    stat: result.stat,
+    etag: result.etag,
+  };
+}
+
+// Binary sibling of writeText. No knowledge-commit hook: knowledge/*.md files
+// are never written through this path.
+export async function writeBuffer(inputPath: string, data: Buffer, opts?: WriteTextOptions) {
+  const resolved = resolveFilePath(inputPath);
+  const atomic = opts?.atomic !== false;
+  const mkdirp = opts?.mkdirp !== false;
+
+  if (mkdirp) {
+    await fs.mkdir(path.dirname(resolved.resolvedPath), { recursive: true });
+  }
+
+  const result = await withFileLock(resolved.resolvedPath, async () => {
+    if (opts?.expectedEtag) {
+      await assertEtagMatches(resolved.resolvedPath, opts.expectedEtag);
+    }
+
+    if (atomic) {
+      const tempPath = `${resolved.resolvedPath}.tmp.${Date.now()}${Math.random().toString(36).slice(2)}`;
+      await fs.writeFile(tempPath, data);
+      await fs.rename(tempPath, resolved.resolvedPath);
+    } else {
+      await fs.writeFile(resolved.resolvedPath, data);
+    }
+
+    const stats = await fs.lstat(resolved.resolvedPath);
+    return { stat: statToSchema(stats), etag: computeEtag(stats.size, stats.mtimeMs) };
+  });
+
   return {
     path: resolved.originalPath,
     resolvedPath: resolved.resolvedPath,
@@ -612,6 +653,16 @@ export async function grep({
   const regex = new RegExp(pattern, 'i');
   const matches: Array<{ file: string; resolvedPath: string; line: number; content: string; before?: string[]; after?: string[] }> = [];
 
+  // Matched "lines" in synced data (email HTML, base64 blobs) can be
+  // megabytes each — a 9MB grep result once 413'd a whole model call. Clip
+  // every line and budget the total so results are always context-safe.
+  const MAX_LINE_CHARS = 500;
+  const MAX_TOTAL_CHARS = 200_000;
+  const clip = (s: string) => (s.length > MAX_LINE_CHARS ? `${s.slice(0, MAX_LINE_CHARS)}…` : s);
+  let totalChars = 0;
+  let truncated = false;
+
+  outer:
   for (const candidate of candidates) {
     if (matches.length >= maxResults) break;
     const resolvedPath = stats.isDirectory() ? path.resolve(baseDir, candidate) : root.resolvedPath;
@@ -621,13 +672,21 @@ export async function grep({
       const lines = text.split(/\r?\n/);
       for (let index = 0; index < lines.length; index++) {
         if (!regex.test(lines[index])) continue;
-        const before = contextLines > 0 ? lines.slice(Math.max(0, index - contextLines), index) : undefined;
-        const after = contextLines > 0 ? lines.slice(index + 1, Math.min(lines.length, index + 1 + contextLines)) : undefined;
+        const before = contextLines > 0 ? lines.slice(Math.max(0, index - contextLines), index).map(clip) : undefined;
+        const after = contextLines > 0 ? lines.slice(index + 1, Math.min(lines.length, index + 1 + contextLines)).map(clip) : undefined;
+        const content = clip(lines[index].trim());
+        totalChars += content.length
+          + (before?.reduce((n, l) => n + l.length, 0) ?? 0)
+          + (after?.reduce((n, l) => n + l.length, 0) ?? 0);
+        if (totalChars > MAX_TOTAL_CHARS) {
+          truncated = true;
+          break outer;
+        }
         matches.push({
           file: stats.isDirectory() ? candidate : root.originalPath,
           resolvedPath,
           line: index + 1,
-          content: lines[index].trim(),
+          content,
           before,
           after,
         });
@@ -644,5 +703,9 @@ export async function grep({
     tool: 'internal-grep',
     searchPath: searchPath || '.',
     resolvedSearchPath: root.resolvedPath,
+    ...(truncated ? {
+      truncated: true,
+      note: 'Results truncated to stay within limits — narrow the pattern, searchPath, or fileGlob for complete results.',
+    } : {}),
   };
 }

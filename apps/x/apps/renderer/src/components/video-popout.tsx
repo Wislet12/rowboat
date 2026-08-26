@@ -126,7 +126,7 @@ export function VideoPopout() {
     const text = draft.trim()
     if (!text) return
     setDraft('')
-    void window.ipc.invoke('video:popoutAction', { action: 'send-text', text }).catch(() => {})
+    void window.ipc.invoke('quickAsk:submit', { text }).catch(() => {})
   }, [draft])
 
   const statusDisplay = state.status ? STATUS_DISPLAY[state.status] : null

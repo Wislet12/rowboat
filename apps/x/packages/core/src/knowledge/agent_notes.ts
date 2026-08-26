@@ -1,9 +1,8 @@
 import fs from 'fs';
 import path from 'path';
-import { google } from 'googleapis';
 import { WorkDir } from '../config/config.js';
 import { runWhenPossible } from '../runtime/assembly/headless-app.js';
-import { getKgModel } from '../models/defaults.js';
+import { asRunModelOptions, getKgModel } from '../models/defaults.js';
 import { getErrorDetails } from '../application/lib/errors.js';
 import { serviceLogger } from '../services/service_logger.js';
 import { loadUserConfig, updateUserEmail } from '../config/user_config.js';
@@ -201,7 +200,7 @@ async function ensureUserEmail(): Promise<string | null> {
     try {
         const auth = await GoogleClientFactory.getClient();
         if (auth) {
-            const gmail = google.gmail({ version: 'v1', auth });
+            const gmail = GoogleClientFactory.gmailClient(auth);
             const profile = await gmail.users.getProfile({ userId: 'me' });
             if (profile.data.emailAddress) {
                 updateUserEmail(profile.data.emailAddress);
@@ -284,7 +283,9 @@ async function processAgentNotes(): Promise<void> {
         await runWhenPossible({
             agentId: AGENT_ID,
             message,
-            ...(await getKgModel()),
+            useCase: 'knowledge_sync',
+            subUseCase: 'agent_notes',
+            ...asRunModelOptions(await getKgModel()),
             throwOnError: true,
         });
 

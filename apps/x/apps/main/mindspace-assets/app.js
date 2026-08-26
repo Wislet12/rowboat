@@ -50,6 +50,7 @@ let interaction = null;
 let dirty = false;
 let saveTimer = null;
 let saveChain = Promise.resolve();
+let saveRequestsInFlight = 0;
 let toastTimer = null;
 let editSerial = 0;
 
@@ -96,28 +97,33 @@ async function flushSave({ keepalive = false } = {}) {
     return API.save(snapshot, true).catch(() => {});
   }
   saveChain = saveChain.then(async () => {
-    const result = await API.save(snapshot);
-    const savedState = result?.state ? ensureShape(result.state) : null;
-    if (savedState) {
-      if (capturedEditSerial === editSerial && !dirty) {
-        state = savedState;
-        if (state.lastSelection) selection[state.lastSelection.kind] = state.lastSelection.id;
-        renderAll();
-      } else {
-        // New local edits happened while the request was in flight. Preserve
-        // them, but adopt the server revision and any concurrently created
-        // items so a chat/voice agent and the canvas cannot clobber each other.
-        for (const kind of ['map', 'brainstorm', 'notes']) {
-          const localIds = new Set(itemsFor(kind).map((item) => item.id));
-          for (const item of kind === 'map' ? savedState.maps : kind === 'brainstorm' ? savedState.brainstorm : savedState.notes) {
-            if (!localIds.has(item.id)) itemsFor(kind).push(item);
+    saveRequestsInFlight += 1;
+    try {
+      const result = await API.save(snapshot);
+      const savedState = result?.state ? ensureShape(result.state) : null;
+      if (savedState) {
+        if (capturedEditSerial === editSerial && !dirty) {
+          state = savedState;
+          if (state.lastSelection) selection[state.lastSelection.kind] = state.lastSelection.id;
+          renderAll();
+        } else {
+          // New local edits happened while the request was in flight. Preserve
+          // them, but adopt the server revision and any concurrently created
+          // items so a chat/voice agent and the canvas cannot clobber each other.
+          for (const kind of ['map', 'brainstorm', 'notes']) {
+            const localIds = new Set(itemsFor(kind).map((item) => item.id));
+            for (const item of kind === 'map' ? savedState.maps : kind === 'brainstorm' ? savedState.brainstorm : savedState.notes) {
+              if (!localIds.has(item.id)) itemsFor(kind).push(item);
+            }
           }
+          state.updatedAt = savedState.updatedAt;
         }
-        state.updatedAt = savedState.updatedAt;
       }
+      setSaveStatus('saved', 'Saved');
+      if (dirty) scheduleSave();
+    } finally {
+      saveRequestsInFlight -= 1;
     }
-    setSaveStatus('saved', 'Saved');
-    if (dirty) scheduleSave();
   }).catch((error) => {
     dirty = true;
     setSaveStatus('error', 'Save failed');
@@ -224,7 +230,10 @@ function createItem(kind = mode) {
   itemsFor(kind).unshift(item);
   selection[kind] = item.id;
   state.lastSelection = { kind, id: item.id };
-  scheduleSave(true);
+  // Let the first title, idea, or journal text join the container creation in
+  // one revision. Persisting an empty shell immediately can race the first edit
+  // and later reintroduce that shell during a concurrent agent/canvas merge.
+  scheduleSave();
   renderAll();
   const titleId = kind === 'map' ? 'map-title' : kind === 'brainstorm' ? 'bs-title' : 'note-title';
   setTimeout(() => document.getElementById(titleId)?.focus(), 30);
@@ -626,8 +635,10 @@ window.addEventListener('rowboat:data-change', (event) => {
   // ownership of the event. Mindspace refreshes state in place so an autosave
   // never tears down an active drag, text edit, voice action, or pending link.
   event.preventDefault();
-  if (dirty) return;
+  if (dirty || saveRequestsInFlight > 0) return;
+  const refreshEditSerial = editSerial;
   void API.load().then((next) => {
+    if (dirty || saveRequestsInFlight > 0 || editSerial !== refreshEditSerial) return;
     if (next.updatedAt === state.updatedAt) return;
     state = ensureShape(next);
     const selected = state.lastSelection;
@@ -645,6 +656,7 @@ async function initialize() {
   selection.brainstorm ||= state.brainstorm[0]?.id || null;
   selection.notes ||= state.notes[0]?.id || null;
   setMode(state.lastSelection?.kind || 'map');
+  document.documentElement.dataset.mindspaceReady = 'true';
 }
 
 void initialize();

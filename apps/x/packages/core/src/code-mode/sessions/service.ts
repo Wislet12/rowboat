@@ -1,308 +1,309 @@
 import path from 'path';
 import fs from 'fs/promises';
-import z from 'zod';
 import { WorkDir } from '../../config/config.js';
-import { capture } from '../../analytics/posthog.js';
-import type { CodeSession, CodeSessionMode } from '@x/shared/dist/code-sessions.js';
+import type { CodeSession } from '@x/shared/dist/code-sessions.js';
 import type { CodingAgent, ApprovalPolicy } from '@x/shared/dist/code-mode.js';
-import { RunEvent, MessageEvent } from '@x/shared/dist/runs.js';
-import type { IRunsRepo } from '../../runtime/legacy/repo.js';
-import type { IRunsLock } from '../../runtime/legacy/lock.js';
-import type { IBus } from '../../application/lib/bus.js';
-import type { IMonotonicallyIncreasingIdGenerator } from '../../application/lib/id-gen.js';
-import type { IAbortRegistry } from '../../runtime/turns/abort-registry.js';
+import type { ISessions } from '../../runtime/sessions/api.js';
+import type { ISessionRepo } from '../../runtime/sessions/repo.js';
 import type { CodeModeManager } from '../acp/manager.js';
-import type { CodePermissionRegistry } from '../acp/permission-registry.js';
 import type { ICodeSessionsRepo } from './repo.js';
 import type { ICodeProjectsRepo } from '../projects/repo.js';
 import { clearStoredSession } from '../acp/session-store.js';
 import * as gitService from '../git/service.js';
+import { withFileLock } from '../../knowledge/file-lock.js';
+import type { EmitterSessionBus } from '../../runtime/sessions/bus.js';
 
 export interface CreateSessionArgs {
     projectId: string;
     title?: string;
     agent: CodingAgent;
-    mode: CodeSessionMode;
-    policy: ApprovalPolicy;
+    // Only pass a policy the USER explicitly chose (dialog, rail select).
+    // Adoption/dispatch leave it unset — runs then resolve chip → global
+    // settings → ask, so the stored field always means "the user chose".
+    policy?: ApprovalPolicy;
     isolation: 'in-repo' | 'worktree';
-    // LLM for Rowboat-mode turns; unset falls through to the configured default.
-    model?: string;
-    provider?: string;
     // The coding agent's own model + reasoning effort (ACP engine); unset leaves
     // the engine default. Re-applied to the ACP session on every turn.
     agentModel?: string;
     agentEffort?: string;
-}
-
-export interface SendMessageResult {
-    accepted: boolean;
-    error?: string;
+    // In-repo only: pin a working directory inside the project (an adopted
+    // run may target a subdirectory). Worktree isolation always works in the
+    // worktree root.
+    cwd?: string;
 }
 
 function worktreeRoot(projectId: string, sessionId: string): string {
     return path.join(WorkDir, 'code-mode', 'worktrees', projectId, sessionId);
 }
 
-// The per-run work directory the copilot anchors its general context to
-// (same file the chat composer writes for regular chats). Keeping it in sync
-// with the session cwd means Rowboat-mode turns see the right "# User Work
-// Directory" even for tools other than code_agent_run.
-async function persistRunWorkDir(runId: string, cwd: string): Promise<void> {
+// The per-chat work directory the copilot anchors its general context to
+// (same file the chat composer writes for regular chats, keyed by the
+// composition workDirId — the session id). Keeping it in sync with the
+// session cwd means turns see the right "# User Work Directory" even for
+// tools other than code_agent_run.
+async function persistRunWorkDir(sessionId: string, cwd: string): Promise<void> {
     try {
-        const file = path.join(WorkDir, 'config', `workdir-${runId}.json`);
+        const file = path.join(WorkDir, 'config', `workdir-${sessionId}.json`);
         await fs.writeFile(file, JSON.stringify({ path: cwd }, null, 2));
     } catch {
         // best effort — the session meta still pins cwd for code_agent_run
     }
 }
 
-// Drives Code-section sessions. A session is a run (same id) whose JSONL holds
-// both modes' history: Rowboat turns are written by the agent runtime; direct
-// turns are written here. The direct path talks straight to the ACP engine —
-// no copilot LLM in between — but mirrors the runtime's lifecycle contract
-// (runs lock, abort registry, processing-start/end, run-stopped) so the rest
-// of the app (stop IPC, status tracking, event forwarding) needs no special
-// casing.
+// Manages Code-section sessions. A code session IS a chat session on the
+// turns runtime (same id): the conversation is an ordinary copilot chat, and
+// code_agent_run resolves this service's per-session meta (cwd, agent,
+// policy, engine model) by the turn's session id. This service owns only the
+// meta + workspace lifecycle (worktrees, merge-back, deletion) — messaging,
+// stop, and permission flow are the chat runtime's, with no special casing.
 export class CodeSessionService {
-    private readonly runsRepo: IRunsRepo;
-    private readonly runsLock: IRunsLock;
-    private readonly bus: IBus;
-    private readonly idGenerator: IMonotonicallyIncreasingIdGenerator;
-    private readonly abortRegistry: IAbortRegistry;
+    private readonly sessions: ISessions;
+    private readonly sessionRepo: ISessionRepo;
     private readonly codeModeManager: CodeModeManager;
-    private readonly codePermissionRegistry: CodePermissionRegistry;
     private readonly codeSessionsRepo: ICodeSessionsRepo;
     private readonly codeProjectsRepo: ICodeProjectsRepo;
-    // Session ids with a direct prompt currently streaming (the runs lock also
-    // guards this, but we keep our own set to give a precise "busy" error).
-    private readonly inflight = new Set<string>();
+    private readonly sessionBus: EmitterSessionBus;
 
     constructor({
-        runsRepo,
-        runsLock,
-        bus,
-        idGenerator,
-        abortRegistry,
+        sessions,
+        sessionRepo,
         codeModeManager,
-        codePermissionRegistry,
         codeSessionsRepo,
         codeProjectsRepo,
+        sessionBus,
     }: {
-        runsRepo: IRunsRepo;
-        runsLock: IRunsLock;
-        bus: IBus;
-        idGenerator: IMonotonicallyIncreasingIdGenerator;
-        abortRegistry: IAbortRegistry;
+        sessions: ISessions;
+        sessionRepo: ISessionRepo;
         codeModeManager: CodeModeManager;
-        codePermissionRegistry: CodePermissionRegistry;
         codeSessionsRepo: ICodeSessionsRepo;
         codeProjectsRepo: ICodeProjectsRepo;
+        sessionBus: EmitterSessionBus;
     }) {
-        this.runsRepo = runsRepo;
-        this.runsLock = runsLock;
-        this.bus = bus;
-        this.idGenerator = idGenerator;
-        this.abortRegistry = abortRegistry;
+        this.sessions = sessions;
+        this.sessionRepo = sessionRepo;
         this.codeModeManager = codeModeManager;
-        this.codePermissionRegistry = codePermissionRegistry;
         this.codeSessionsRepo = codeSessionsRepo;
         this.codeProjectsRepo = codeProjectsRepo;
+        this.sessionBus = sessionBus;
+    }
+
+    // Sessions created before code mode moved onto the turns runtime have meta
+    // files but no chat-session file, so the chat pane could not open them.
+    // The runs->turns migration converts their old JSONL history into real
+    // sessions; this backfill is the fallback for metas whose legacy run is
+    // gone (deleted, quarantined). Runs before the session index's startup
+    // scan so backfilled sessions get indexed — and exactly ONCE per install
+    // (marker file), so boots converge instead of rescanning forever.
+    async backfillChatSessions(): Promise<void> {
+        const marker = path.join(WorkDir, 'code-mode', '.chat-sessions-backfilled');
+        try {
+            await fs.access(marker);
+            return; // already ran
+        } catch {
+            // first run — proceed
+        }
+        const metas = await this.codeSessionsRepo.list().catch(() => [] as CodeSession[]);
+        for (const meta of metas) {
+            try {
+                await this.sessionRepo.create({
+                    type: 'session_created',
+                    schemaVersion: 1,
+                    sessionId: meta.id,
+                    ts: meta.createdAt,
+                    title: meta.title,
+                });
+            } catch {
+                // Already exists (migrated with history, or a prior backfill),
+                // or an id shape the session store can't hold — nothing to do.
+            }
+        }
+        await fs.mkdir(path.dirname(marker), { recursive: true }).catch(() => {});
+        await fs.writeFile(marker, new Date().toISOString()).catch(() => {});
     }
 
     async create(args: CreateSessionArgs): Promise<CodeSession> {
         const project = await this.codeProjectsRepo.get(args.projectId);
         if (!project) throw new Error(`Unknown project: ${args.projectId}`);
 
-        // The session is a real run so Rowboat mode (agent runtime) works on it
-        // directly and the existing runs plumbing (fetch/events/stop) applies.
-        const { createRun } = await import('../../runtime/legacy/runs.js');
-        const run = await createRun({
-            agentId: 'copilot',
-            useCase: 'code_session',
-            ...(args.model ? { model: args.model } : {}),
-            ...(args.provider ? { provider: args.provider } : {}),
-        });
-        const sessionId = run.id;
-
-        let cwd = project.path;
-        let worktree: CodeSession['worktree'];
-        if (args.isolation === 'worktree') {
-            const info = await gitService.repoInfo(project.path);
-            if (!info.isGitRepo || !info.hasCommits) {
-                throw new Error('Worktree isolation needs a git repository with at least one commit.');
-            }
-            const branch = `rowboat/${sessionId}`;
-            const wtPath = worktreeRoot(project.id, sessionId);
-            await gitService.worktreeAdd(project.path, wtPath, branch);
-            worktree = { path: wtPath, branch, baseBranch: info.branch };
-            cwd = wtPath;
-        }
-
-        const session: CodeSession = {
-            id: sessionId,
-            projectId: project.id,
-            title: args.title?.trim() || `${project.name} session`,
-            agent: args.agent,
-            mode: args.mode,
-            policy: args.policy,
-            cwd,
-            ...(worktree ? { worktree } : {}),
-            ...(args.agentModel ? { agentModel: args.agentModel } : {}),
-            ...(args.agentEffort ? { agentEffort: args.agentEffort } : {}),
-            createdAt: new Date().toISOString(),
-        };
-        await this.codeSessionsRepo.save(session);
-        await persistRunWorkDir(sessionId, cwd);
-        return session;
+        // The session is a real chat session, created first so its id becomes
+        // the code session id. Everything chat (messaging, stop, permission
+        // cards, history) works on it with no code-mode special casing.
+        const title = args.title?.trim() || `${project.name} session`;
+        const sessionId = await this.sessions.createSession({ title });
+        return this.createForSession(sessionId, { ...args, title });
     }
 
-    async update(sessionId: string, patch: Partial<Pick<CodeSession, 'title' | 'mode' | 'policy' | 'agent' | 'agentModel' | 'agentEffort'>>): Promise<CodeSession> {
+    /**
+     * Adopt an EXISTING chat session as a code session: write the meta (and
+     * optional worktree) keyed by its id. This is how Home's code dispatch
+     * and the code_agent_run adoption hook materialize code sessions — the
+     * session already exists (a to-do item's thread, a plain chat), and after
+     * this the server-side pinning in code_agent_run resolves it like any
+     * Code-section session. Adopt-once: existing meta is returned untouched.
+     */
+    async createForSession(sessionId: string, args: CreateSessionArgs): Promise<CodeSession> {
+        // The Command Center session is the dispatcher — it assigns coding
+        // work to OTHER threads and must never itself become a code session.
+        // Guarded here (not just in the adoption hook) so no path can ever
+        // pin the operator channel to a repo/worktree.
+        const { getCommandCenterSessionId } = await import('../../home/command-center.js');
+        const commandCenterId = await getCommandCenterSessionId().catch(() => null);
+        if (commandCenterId && commandCenterId === sessionId) {
+            throw new Error('The Command Center session is the dispatcher — it cannot become a code session.');
+        }
+        const project = await this.codeProjectsRepo.get(args.projectId);
+        if (!project) throw new Error(`Unknown project: ${args.projectId}`);
+
+        // Adopt-once must be ATOMIC: the runtime allows parallel tool calls
+        // in one model response, so two code_agent_run calls can race here.
+        // Without the lock both pass the existence check, both cut
+        // worktrees, and the second save clobbers the first — one engine
+        // then works in a worktree the system has no record of. The whole
+        // read → (worktree) → save sequence runs under a per-session lock;
+        // the loser re-reads the winner's meta and returns it.
+        return withFileLock(`code-session-adopt:${sessionId}`, async () => {
+            const existing = await this.codeSessionsRepo.get(sessionId);
+            if (existing) return existing;
+
+            // Meta title: the caller's, else the chat's own (a to-do session
+            // is titled by its item text — keep that identity in the rail).
+            let title = args.title?.trim();
+            if (!title) {
+                title = await this.sessions.getSession(sessionId).then((s) => s.title?.trim()).catch(() => undefined);
+            }
+            title = title || `${project.name} session`;
+
+            let cwd = args.cwd ?? project.path;
+            let worktree: CodeSession['worktree'];
+            if (args.isolation === 'worktree') {
+                const info = await gitService.repoInfo(project.path);
+                if (!info.isGitRepo || !info.hasCommits) {
+                    throw new Error('Worktree isolation needs a git repository with at least one commit.');
+                }
+                const branch = `rowboat/${sessionId}`;
+                const wtPath = worktreeRoot(project.id, sessionId);
+                await gitService.worktreeAdd(project.path, wtPath, branch);
+                worktree = { path: wtPath, branch, baseBranch: info.branch };
+                cwd = wtPath;
+            }
+
+            const session: CodeSession = {
+                id: sessionId,
+                projectId: project.id,
+                title,
+                agent: args.agent,
+                // Never freeze a transient posture: policy is stored only
+                // when the caller carries an explicit user choice.
+                ...(args.policy ? { policy: args.policy } : {}),
+                cwd,
+                ...(worktree ? { worktree } : {}),
+                ...(args.agentModel ? { agentModel: args.agentModel } : {}),
+                ...(args.agentEffort ? { agentEffort: args.agentEffort } : {}),
+                createdAt: new Date().toISOString(),
+            };
+            await this.codeSessionsRepo.save(session);
+            await persistRunWorkDir(sessionId, cwd);
+            // One identity-change event; every "what kind of session is
+            // this" cache (status tracker, Home registry, future ones)
+            // corrects itself from the bus instead of per-cache hand-pokes.
+            this.sessionBus.publish({ kind: 'code-adopted', sessionId });
+            return session;
+        });
+    }
+
+    /**
+     * The repo coding work defaults into when no path is named: the
+     * configured default project, or — when exactly one project is
+     * registered — that project implicitly (the common single-repo case
+     * needs no setup at all). Null when there are zero or several projects
+     * and no explicit choice.
+     */
+    async resolveDefaultProject(): Promise<{ id: string; path: string; name: string } | null> {
+        const projects = await this.codeProjectsRepo.list().catch(() => []);
+        if (projects.length === 0) return null;
+        try {
+            const { lazyResolve } = await import('../../di/lazy-resolve.js');
+            const configRepo = await lazyResolve<{ getConfig(): Promise<{ defaultProjectId?: string }> }>('codeModeConfigRepo');
+            const configured = (await configRepo.getConfig()).defaultProjectId;
+            if (configured) {
+                const match = projects.find((p) => p.id === configured);
+                if (match) return match;
+                // A stale id (project was removed) falls through to the
+                // single-project rule rather than dead-ending.
+            }
+        } catch {
+            // Config unavailable — the single-project rule still applies.
+        }
+        return projects.length === 1 ? projects[0] : null;
+    }
+
+    /**
+     * Clear code-mode residue whose chat session no longer exists: meta,
+     * stored ACP conversation, and workdir sidecar. Sessions can be deleted
+     * by paths that (correctly) know nothing of code-mode — the retention
+     * sweep, pre-fix delete flows — and each leaves a ghost row in the Code
+     * rail and a stale sidecar behind. Called from the app layer on the
+     * retention cadence, AFTER the session sweep. Worktree checkouts are
+     * deliberately left on disk: an unmerged worktree may hold the only
+     * copy of the work; removal stays an explicit user decision.
+     */
+    async sweepOrphanedMeta(): Promise<number> {
+        const live = new Set(this.sessions.listSessions().map((entry) => entry.sessionId));
+        const metas = await this.codeSessionsRepo.list().catch(() => [] as CodeSession[]);
+        let cleared = 0;
+        for (const meta of metas) {
+            if (live.has(meta.id)) continue;
+            try {
+                this.codeModeManager.dispose(meta.id);
+                await clearStoredSession(meta.id);
+                await this.codeSessionsRepo.remove(meta.id);
+                await fs.rm(path.join(WorkDir, 'config', `workdir-${meta.id}.json`), { force: true }).catch(() => {});
+                cleared += 1;
+            } catch (error) {
+                console.error(`[CodeSessions] failed to clear orphaned meta for ${meta.id}:`, error);
+            }
+        }
+        return cleared;
+    }
+
+    /** The registered project containing an absolute path, if any — longest
+     * path wins so nested registrations resolve to the closest project. */
+    async findProjectForPath(absPath: string): Promise<{ id: string; path: string; name: string } | null> {
+        const projects = await this.codeProjectsRepo.list().catch(() => []);
+        let best: { id: string; path: string; name: string } | null = null;
+        for (const project of projects) {
+            const root = path.resolve(project.path);
+            if (absPath === root || absPath.startsWith(root + path.sep)) {
+                if (!best || root.length > path.resolve(best.path).length) best = project;
+            }
+        }
+        return best;
+    }
+
+    async update(sessionId: string, patch: Partial<Pick<CodeSession, 'title' | 'policy' | 'agent' | 'agentModel' | 'agentEffort'>>): Promise<CodeSession> {
         const session = await this.codeSessionsRepo.get(sessionId);
         if (!session) throw new Error(`Unknown session: ${sessionId}`);
         const updated: CodeSession = { ...session, ...patch };
         await this.codeSessionsRepo.save(updated);
+        if (patch.title && patch.title !== session.title) {
+            // Keep the chat session's title (history list, notifications) in sync.
+            await this.sessions.setTitle(sessionId, patch.title).catch(() => {});
+        }
         return updated;
     }
 
-    isBusy(sessionId: string): boolean {
-        return this.inflight.has(sessionId);
-    }
-
-    // Direct drive: send the user's text straight to the session's ACP agent.
-    // Returns once the turn fully settles (the renderer streams via runs:events).
-    async sendMessage(sessionId: string, text: string): Promise<SendMessageResult> {
-        const session = await this.codeSessionsRepo.get(sessionId);
-        if (!session) return { accepted: false, error: `Unknown session: ${sessionId}` };
-        if (this.inflight.has(sessionId)) {
-            return { accepted: false, error: 'The agent is still working on the previous message.' };
-        }
-        // The runs lock is shared with the agent runtime, so a Rowboat-mode turn
-        // in flight blocks direct sends (and vice versa) — the run JSONL never
-        // interleaves two writers.
-        if (!await this.runsLock.lock(sessionId)) {
-            return { accepted: false, error: 'The session is busy with a Rowboat-driven turn.' };
-        }
-        this.inflight.add(sessionId);
-        // Direct-drive turns bypass the agent runtime, so they never show up in
-        // llm_usage — this is the only signal that direct code mode is used.
-        capture('code_session_message_sent', { mode: session.mode, agent: session.agent });
-        const signal = this.abortRegistry.createForRun(sessionId);
-        const turnId = await this.idGenerator.next();
-        const toolCallId = `direct-${turnId}`;
-
-        const appendAndPublish = async (event: z.infer<typeof RunEvent>) => {
-            await this.runsRepo.appendEvents(sessionId, [event]);
-            await this.bus.publish(event);
-        };
-
-        try {
-            await this.bus.publish({ runId: sessionId, type: 'run-processing-start', subflow: [] });
-
-            const userEvent: z.infer<typeof MessageEvent> = {
-                runId: sessionId,
-                type: 'message',
-                messageId: await this.idGenerator.next(),
-                message: { role: 'user', content: text },
-                subflow: [],
-                ts: new Date().toISOString(),
-            };
-            await appendAndPublish(userEvent);
-            await this.touch(session);
-
-            // Stream events live; persist the structural ones (tool calls, plan,
-            // resolved permissions). Streaming `message` chunks are NOT persisted —
-            // the agent's full text lands as one assistant MessageEvent below, which
-            // is also what lets a later Rowboat-mode turn see this conversation.
-            let finalText = '';
-            const persistQueue: Array<z.infer<typeof RunEvent>> = [];
-            const onAbort = () => this.codePermissionRegistry.cancelRun(sessionId);
-            if (signal.aborted) onAbort();
-            else signal.addEventListener('abort', onAbort, { once: true });
-
-            let stopReason = 'cancelled';
-            try {
-                const result = await this.codeModeManager.runPrompt({
-                    runId: sessionId,
-                    agent: session.agent,
-                    cwd: session.cwd,
-                    prompt: text,
-                    policy: session.policy,
-                    ...(session.agentModel ? { model: session.agentModel } : {}),
-                    ...(session.agentEffort ? { effort: session.agentEffort } : {}),
-                    signal,
-                    suppressReplay: true,
-                    onEvent: (event) => {
-                        if (event.type === 'message' && event.role === 'agent') finalText += event.text;
-                        const streamEvent: z.infer<typeof RunEvent> = {
-                            runId: sessionId,
-                            type: 'code-run-event',
-                            toolCallId,
-                            event,
-                            subflow: [],
-                        };
-                        void this.bus.publish(streamEvent);
-                        if (event.type === 'tool_call' || event.type === 'tool_call_update'
-                            || event.type === 'plan' || event.type === 'permission') {
-                            persistQueue.push({ ...streamEvent, ts: new Date().toISOString() });
-                        }
-                    },
-                    ask: (permAsk) => this.codePermissionRegistry.request(sessionId, (requestId) => {
-                        void this.bus.publish({
-                            runId: sessionId,
-                            type: 'code-run-permission-request',
-                            toolCallId,
-                            requestId,
-                            ask: permAsk,
-                            subflow: [],
-                        });
-                    }),
-                });
-                stopReason = result.stopReason;
-            } catch (error) {
-                if (!signal.aborted) {
-                    const message = error instanceof Error ? (error.message || error.name) : String(error);
-                    await appendAndPublish({ runId: sessionId, type: 'error', error: message, subflow: [] });
-                }
-            } finally {
-                signal.removeEventListener('abort', onAbort);
-            }
-
-            if (persistQueue.length > 0) {
-                await this.runsRepo.appendEvents(sessionId, persistQueue);
-            }
-            if (finalText.trim()) {
-                await appendAndPublish({
-                    runId: sessionId,
-                    type: 'message',
-                    messageId: await this.idGenerator.next(),
-                    message: { role: 'assistant', content: finalText },
-                    subflow: [],
-                    ts: new Date().toISOString(),
-                });
-            }
-            if (signal.aborted || stopReason === 'cancelled') {
-                await appendAndPublish({
-                    runId: sessionId,
-                    type: 'run-stopped',
-                    reason: 'user-requested',
-                    subflow: [],
-                });
-            }
-            await this.touch(session);
-            return { accepted: true };
-        } finally {
-            this.inflight.delete(sessionId);
-            this.abortRegistry.cleanup(sessionId);
-            await this.runsLock.release(sessionId);
-            await this.bus.publish({ runId: sessionId, type: 'run-processing-end', subflow: [] });
-        }
-    }
-
-    // Unblocks a stuck permission card immediately; the manager's signal handling
-    // (ACP cancel -> grace -> force-kill) actually unwinds the prompt.
+    // Stop whatever turn is live on the session's chat. The turn's abort
+    // signal unwinds code_agent_run (ACP cancel → grace → force-kill) and
+    // cancels any pending approval card.
     async stop(sessionId: string): Promise<void> {
-        this.abortRegistry.abort(sessionId);
-        this.codePermissionRegistry.cancelRun(sessionId);
+        try {
+            const state = await this.sessions.getSession(sessionId);
+            if (state.latestTurnId) {
+                await this.sessions.stopTurn(state.latestTurnId, 'user-requested');
+            }
+        } catch {
+            // No chat session / no turns — nothing to stop.
+        }
     }
 
     async mergeBack(sessionId: string): Promise<gitService.MergeBackResult> {
@@ -361,13 +362,9 @@ export class CodeSessionService {
         }
         await clearStoredSession(sessionId);
         await this.codeSessionsRepo.remove(sessionId);
-        await this.runsRepo.delete(sessionId).catch(() => {});
+        // The chat session + its turn files; pre-runtime-move sessions may
+        // have none, and their legacy run JSONL is left for retention.
+        await this.sessions.deleteSession(sessionId).catch(() => {});
         await fs.rm(path.join(WorkDir, 'config', `workdir-${sessionId}.json`), { force: true }).catch(() => {});
-    }
-
-    private async touch(session: CodeSession): Promise<void> {
-        const current = await this.codeSessionsRepo.get(session.id);
-        if (!current) return;
-        await this.codeSessionsRepo.save({ ...current, lastActivityAt: new Date().toISOString() });
     }
 }
