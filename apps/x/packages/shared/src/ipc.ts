@@ -2216,6 +2216,18 @@ const ipcSchemas = {
       paths: z.array(z.string()),
     }),
   },
+  'apps:getMindspaceContext': {
+    req: z.object({}),
+    res: z.object({
+      kind: z.literal('mindspace'),
+      contextId: z.string(),
+      title: z.string(),
+      selectedKind: z.enum(['map', 'brainstorm', 'notes']).optional(),
+      selectedId: z.string().optional(),
+      content: z.string(),
+      capturedAt: z.string(),
+    }),
+  },
   'knowledge:importNotes': {
     req: z.object({
       targetFolder: RelPath.optional(),

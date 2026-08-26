@@ -201,6 +201,50 @@ describe('active notebook context encoding', () => {
   })
 })
 
+describe('active Mindspace context encoding', () => {
+  it('replaces the previous Mindspace selection without content bleed', () => {
+    const encoded = convertFromMessages([
+      {
+        role: 'user',
+        content: 'Discuss this map',
+        userMessageContext: {
+          middlePane: {
+            kind: 'mindspace',
+            contextId: 'mindspace@1',
+            title: 'Alpha map',
+            selectedKind: 'map',
+            selectedId: 'alpha',
+            content: 'ALPHA_MINDSPACE_PRIVATE',
+            capturedAt: '2026-08-26T12:00:00.000Z',
+          },
+        },
+      },
+      { role: 'assistant', content: 'Done.' },
+      {
+        role: 'user',
+        content: 'Now discuss this one',
+        userMessageContext: {
+          middlePane: {
+            kind: 'mindspace',
+            contextId: 'mindspace@2',
+            title: 'Beta note',
+            selectedKind: 'notes',
+            selectedId: 'beta',
+            content: 'BETA_MINDSPACE_CURRENT',
+            capturedAt: '2026-08-26T12:01:00.000Z',
+          },
+        },
+      },
+    ])
+
+    const wire = JSON.stringify(encoded)
+    expect(wire).not.toContain('ALPHA_MINDSPACE_PRIVATE')
+    expect(wire).toContain('BETA_MINDSPACE_CURRENT')
+    expect(wire).toContain('only active Mindspace snapshot')
+    expect(wire).toContain('Mindspace tool')
+  })
+})
+
 describe('active browser context encoding', () => {
   it('keeps only the newest tab snapshot and marks page content untrusted', () => {
     const encoded = convertFromMessages([

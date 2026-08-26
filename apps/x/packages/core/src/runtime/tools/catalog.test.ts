@@ -194,6 +194,7 @@ const HISTORICAL_KEY_ORDER = [
     "composio-connect-toolkit",
     "app-read-data",
     "app-set-data",
+    "mindspace",
     "list-models",
     "fetch-url",
     "run-live-note-agent",

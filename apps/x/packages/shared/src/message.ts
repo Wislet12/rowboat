@@ -109,6 +109,15 @@ export const UserMessageContext = z.object({
             capturedAt: z.string().optional(),
         }),
         z.object({
+            kind: z.literal("mindspace"),
+            contextId: z.string(),
+            title: z.string(),
+            selectedKind: z.enum(["map", "brainstorm", "notes"]).optional(),
+            selectedId: z.string().optional(),
+            content: z.string(),
+            capturedAt: z.string(),
+        }),
+        z.object({
             kind: z.literal("browser"),
             url: z.string(),
             title: z.string(),

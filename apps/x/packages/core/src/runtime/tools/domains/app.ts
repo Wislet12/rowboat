@@ -16,6 +16,12 @@ import { listTasks as listBackgroundTasks } from "../../../background-tasks/file
 import type { ISessions } from "../../sessions/api.js";
 import { BuiltinToolsSchema } from "../types.js";
 import { search as searchWorkspace } from "../../../search/search.js";
+import {
+    MINDSPACE_DATA_FILE,
+    MINDSPACE_FOLDER,
+    runMindspaceAction,
+    writeMindspaceState,
+} from "../../../apps/mindspace.js";
 
 
 export const appNavigationTools: z.infer<typeof BuiltinToolsSchema> = {
@@ -457,6 +463,11 @@ export const appDataTools: z.infer<typeof BuiltinToolsSchema> = {
                     }
                 }
 
+                if (appFolder === MINDSPACE_FOLDER && relNorm === MINDSPACE_DATA_FILE) {
+                    const state = await writeMindspaceState(payload);
+                    return { success: true, appFolder, file: relNorm, state };
+                }
+
                 await fs.mkdir(path.dirname(abs), { recursive: true });
                 const tmp = `${abs}.tmp-${Math.random().toString(16).slice(2, 10)}`;
                 await fs.writeFile(tmp, JSON.stringify(payload, null, 2));
@@ -466,5 +477,31 @@ export const appDataTools: z.infer<typeof BuiltinToolsSchema> = {
                 return { success: false, error: e instanceof Error ? e.message : String(e) };
             }
         },
+    },
+    'mindspace': {
+        permission: "none",
+        description: "Safely read or change Mindspace notes, journals, brainstorms, and mind maps. Supports bounded item-level creation, editing, starring, node connections, safe deletion scopes, and optional Brain linking without overwriting the entire app state. Use this instead of app-set-data for Mindspace.",
+        inputSchema: z.object({
+            action: z.enum([
+                'list', 'read', 'create', 'update-item', 'delete-item',
+                'add-node', 'update-node', 'delete-node', 'connect-nodes', 'disconnect-nodes',
+                'add-thought', 'update-thought', 'delete-thought',
+                'add-to-brain', 'remove-from-brain',
+            ]),
+            kind: z.enum(['map', 'brainstorm', 'notes']).optional(),
+            itemId: z.string().optional(),
+            title: z.string().optional(),
+            body: z.string().optional(),
+            text: z.string().optional(),
+            nodeId: z.string().optional(),
+            thoughtId: z.string().optional(),
+            sourceNodeId: z.string().optional(),
+            targetNodeId: z.string().optional(),
+            x: z.number().optional(),
+            y: z.number().optional(),
+            starred: z.boolean().optional(),
+            deleteEverywhere: z.boolean().optional().describe('Only true when the user explicitly asks to delete both Mindspace and its linked Brain copy. Default deletion removes only the Mindspace item.'),
+        }),
+        execute: async (input) => runMindspaceAction(input),
     },
 };

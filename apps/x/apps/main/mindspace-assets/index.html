@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mindspace</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div class="brand"><div class="brand-mark"></div><span class="brand-name">Mindspace</span></div>
+      <nav class="modes" aria-label="Mindspace areas">
+        <button class="mode-btn active" data-mode="map" type="button"><span class="mode-icon">⌘</span><span>Mind maps</span></button>
+        <button class="mode-btn" data-mode="brainstorm" type="button"><span class="mode-icon">✦</span><span>Brainstorm</span></button>
+        <button class="mode-btn" data-mode="notes" type="button"><span class="mode-icon">▤</span><span>Notes & journal</span></button>
+      </nav>
+      <div class="sidebar-list-wrap">
+        <div class="list-head"><span id="list-title">Maps</span><button id="new-item" type="button" title="Create new">+</button></div>
+        <div id="item-list" class="item-list"></div>
+      </div>
+    </aside>
+
+    <main id="main">
+      <section id="view-map" class="view active">
+        <header class="topbar">
+          <div class="title-row">
+            <input id="map-title" class="title-input" placeholder="Untitled map" aria-label="Mind map title" />
+            <div class="item-actions map-actions">
+              <button class="icon-btn star-item" type="button" title="Star this mind map" aria-label="Star this mind map">☆</button>
+              <button class="brain-btn" type="button">Add to Brain</button>
+              <button class="danger-btn delete-current" type="button">Delete</button>
+            </div>
+          </div>
+          <div class="toolbar">
+            <button id="add-node" class="btn primary" type="button">+ Add idea</button>
+            <button id="auto-arrange" class="btn" type="button">Auto arrange</button>
+            <button id="delete-edge" class="btn danger subtle" type="button" hidden>Delete connection</button>
+            <span class="hint"><strong>Drag from a blue dot to another idea</strong> to connect them. Drag cards to move.</span>
+            <span class="save-status" role="status">Saved</span>
+          </div>
+        </header>
+        <div id="canvas-wrap" tabindex="0" aria-label="Mind map canvas">
+          <svg id="canvas" aria-hidden="true"></svg>
+          <div id="empty-map" class="empty"><div class="empty-inner"><div class="empty-glyph">✦</div><p>Add your central idea, then drag a blue connector to build branches.</p><button id="empty-add-node" class="btn primary" type="button">Create central idea</button></div></div>
+        </div>
+      </section>
+
+      <section id="view-brainstorm" class="view">
+        <header class="topbar">
+          <div class="title-row">
+            <input id="bs-title" class="title-input" placeholder="Untitled brainstorm" aria-label="Brainstorm title" />
+            <div class="item-actions">
+              <button class="icon-btn star-item" type="button" title="Star this brainstorm" aria-label="Star this brainstorm">☆</button>
+              <button class="brain-btn" type="button">Add to Brain</button>
+              <button class="danger-btn delete-current" type="button">Delete</button>
+            </div>
+          </div>
+          <div class="toolbar"><span class="hint">Capture an idea and press Enter. Every card stays editable.</span><span class="save-status" role="status">Saved</span></div>
+        </header>
+        <div class="bs-wrap">
+          <form id="bs-form"><input id="bs-input" class="bs-input" placeholder="What’s on your mind?" autocomplete="off" /></form>
+          <div id="bs-cards" class="bs-cards"></div>
+        </div>
+      </section>
+
+      <section id="view-notes" class="view">
+        <header class="topbar">
+          <div class="title-row">
+            <input id="note-title" class="title-input" placeholder="Untitled note or journal" aria-label="Note title" />
+            <div class="item-actions">
+              <button class="icon-btn star-item" type="button" title="Star this note" aria-label="Star this note">☆</button>
+              <button class="brain-btn" type="button">Add to Brain</button>
+              <button class="danger-btn delete-current" type="button">Delete</button>
+            </div>
+          </div>
+          <div class="toolbar"><span class="hint">Write freely. Changes are saved locally and restored when you return.</span><span class="save-status" role="status">Saved</span></div>
+        </header>
+        <textarea id="note-body" class="note-body" placeholder="Start writing…"></textarea>
+      </section>
+    </main>
+  </div>
+
+  <div id="delete-dialog" class="dialog-backdrop" hidden>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="delete-title">
+      <h2 id="delete-title">Delete this item?</h2>
+      <p id="delete-message">Choose where it should be removed.</p>
+      <div class="dialog-actions">
+        <button id="delete-cancel" class="btn" type="button">Cancel</button>
+        <button id="delete-mindspace" class="btn danger" type="button">Delete from Mindspace</button>
+        <button id="delete-everywhere" class="danger-btn" type="button">Delete everywhere</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>

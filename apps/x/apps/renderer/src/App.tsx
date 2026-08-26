@@ -3727,6 +3727,15 @@ function App() {
         metadata?: { description?: string; headings?: string[]; language?: string }
         untrusted: true
       }
+    | {
+        kind: 'mindspace'
+        contextId: string
+        title: string
+        selectedKind?: 'map' | 'brainstorm' | 'notes'
+        selectedId?: string
+        content: string
+        capturedAt: string
+      }
   const buildMiddlePaneContext = async (query?: string): Promise<MiddlePaneContextPayload | undefined> => {
     // Browser is an overlay on top of any note — when it's open, it's what the user is looking at.
     if (isBrowserOpen) {
@@ -3765,6 +3774,18 @@ function App() {
         // fall through to no-context if browser state is unavailable
       }
       return undefined
+    }
+
+    // Mindspace is a first-class active workspace, not a generic app blob.
+    // Read its persisted state on every chat/voice turn so navigation and
+    // agent mutations replace context immediately without cross-item bleed.
+    if (isAppsOpen && activeAppFolder === 'mindspace') {
+      try {
+        return await window.ipc.invoke('apps:getMindspaceContext', {})
+      } catch (error) {
+        console.warn('[mindspace-context] Mindspace state is unavailable; omitting it', error)
+        return undefined
+      }
     }
 
     // A Notebook is a first-class multi-source middle-pane context. Its
@@ -3857,7 +3878,7 @@ function App() {
   useEffect(() => {
     if (!rowboatRealtimeVoiceRef.current.active) return
     void rowboatRealtimeVoiceRef.current.refreshContext()
-  }, [selectedPath, activeNotebookPath, isBrowserOpen, debouncedContent])
+  }, [selectedPath, activeNotebookPath, isBrowserOpen, isAppsOpen, activeAppFolder, debouncedContent])
 
   const handlePromptSubmit = async (
     message: PromptInputMessage,

@@ -15,6 +15,14 @@ import {
     MAX_DATA_FILE_BYTES,
     appOrigin,
 } from './constants.js';
+import {
+    ensureFirstClassMindspaceApp,
+    MINDSPACE_DATA_FILE,
+    MINDSPACE_FOLDER,
+    setMindspaceBrainLink,
+    writeMindspaceState,
+    type MindspaceKind,
+} from './mindspace.js';
 
 // Rowboat Apps server (spec §6–§7). Adapted from the deleted local-sites
 // server: one HTTP server on 127.0.0.1:3210, routing by Host header to
@@ -414,8 +422,8 @@ async function handleDataApi(
         if (body === null) return sendError(res, 413, 'too_large', `body exceeds ${MAX_DATA_FILE_BYTES} bytes`);
 
         const contract = contractFor(manifest, relNorm);
+        let payload: unknown;
         if (contract) {
-            let payload: unknown;
             try {
                 payload = JSON.parse(body.toString('utf-8'));
             } catch {
@@ -431,6 +439,19 @@ async function handleDataApi(
         const parent = path.dirname(abs);
         await fsp.mkdir(parent, { recursive: true });
         if (realpathEscapes(dataRoot, parent)) return sendError(res, 403, 'forbidden_path', 'path escapes data/');
+
+        // Mindspace state writes are serialized and atomically synchronized to
+        // any explicitly linked Brain copies. This avoids iframe and agent
+        // mutations racing each other through the generic file endpoint.
+        if (slug === MINDSPACE_FOLDER && relNorm === MINDSPACE_DATA_FILE) {
+            if (payload === undefined) {
+                try { payload = JSON.parse(body.toString('utf-8')); }
+                catch { return sendError(res, 422, 'contract_violation', `${relNorm} must be valid JSON`); }
+            }
+            const state = await writeMindspaceState(payload);
+            res.json({ ok: true, size: body.length, state });
+            return;
+        }
 
         const tmp = `${abs}.tmp-${crypto.randomBytes(4).toString('hex')}`;
         await fsp.writeFile(tmp, body);
@@ -510,6 +531,29 @@ async function handleHostApi(
 
     if (pathname === '/_rowboat/data' || pathname.startsWith('/_rowboat/data/')) {
         await handleDataApi(slug, manifest, req, res, pathname);
+        return;
+    }
+
+    if (pathname === '/_rowboat/mindspace/brain') {
+        if (req.method !== 'POST') {
+            return sendError(res, 405, 'method_not_allowed', `${pathname} accepts POST only`);
+        }
+        if (slug !== MINDSPACE_FOLDER) {
+            return sendError(res, 403, 'forbidden_app', 'Mindspace Brain links are available only to Mindspace');
+        }
+        const body = await readBody(req, 64 * 1024);
+        if (body === null) return sendError(res, 413, 'too_large', 'body exceeds 64 KiB');
+        let payload: Record<string, unknown>;
+        try { payload = JSON.parse(body.toString('utf8')) as Record<string, unknown>; }
+        catch { return sendError(res, 400, 'bad_request', 'body must be valid JSON'); }
+        const kind = payload.kind;
+        const itemId = payload.itemId;
+        const linked = payload.linked;
+        if (!['map', 'brainstorm', 'notes'].includes(String(kind)) || typeof itemId !== 'string' || !itemId || typeof linked !== 'boolean') {
+            return sendError(res, 400, 'bad_request', 'kind, itemId, and linked are required');
+        }
+        const state = await setMindspaceBrainLink(kind as MindspaceKind, itemId, linked);
+        res.json({ ok: true, state });
         return;
     }
 
@@ -779,6 +823,7 @@ export async function init(): Promise<void> {
     startPromise = (async () => {
         try {
             await fsp.mkdir(APPS_DIR, { recursive: true });
+            await ensureFirstClassMindspaceApp();
             startLagMonitor();
             await startWatcher();
             const expressApp = createApp();

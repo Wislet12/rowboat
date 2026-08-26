@@ -105,6 +105,7 @@ function updateSelfCaptureState() {
 import * as composioHandler from './composio-handler.js';
 import * as appsIndexer from '@x/core/dist/apps/indexer.js';
 import * as appsServer from '@x/core/dist/apps/server.js';
+import * as mindspaceCore from '@x/core/dist/apps/mindspace.js';
 import * as appsAgents from '@x/core/dist/apps/agents.js';
 import { capture } from '@x/core/dist/analytics/posthog.js';
 import { recordAppVersion, isVersionUpgrade } from '@x/core/dist/config/app_version.js';
@@ -2090,6 +2091,9 @@ export function setupIpcHandlers() {
         ...(readme ? { readme } : {}),
         rollbackAvailable: await appsIndexer.rollbackAvailable(args.folder),
       };
+    },
+    'apps:getMindspaceContext': async () => {
+      return mindspaceCore.getMindspaceContext();
     },
     'apps:create': async (_event, args) => {
       const app = await appsIndexer.createApp(args);

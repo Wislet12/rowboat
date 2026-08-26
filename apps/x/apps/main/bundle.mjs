@@ -74,6 +74,25 @@ if (unresolvedDocumentParsers.length > 0) {
 // binaries). The macOS spawn-helper must be executable — pnpm extraction drops
 // the bit, and a non-executable helper makes every PTY spawn fail.
 const here = path.dirname(fileURLToPath(import.meta.url));
+
+// Mindspace is promoted from an optional catalog app to a durable first-party
+// Rowboat workspace. Stage its browser-only assets next to main.cjs so the core
+// can materialize or refresh the app on every supported packaged platform.
+const mindspaceAssetsSrc = path.join(here, 'mindspace-assets');
+const mindspaceAssetsDest = path.join(here, '.package', 'dist', 'mindspace');
+const requiredMindspaceAssets = ['app.js', 'index.html', 'styles.css', 'LICENSE'];
+for (const asset of requiredMindspaceAssets) {
+  if (!fs.existsSync(path.join(mindspaceAssetsSrc, asset))) {
+    throw new Error(`Missing first-party Mindspace asset: ${asset}`);
+  }
+}
+fs.rmSync(mindspaceAssetsDest, { recursive: true, force: true });
+fs.mkdirSync(mindspaceAssetsDest, { recursive: true });
+for (const asset of requiredMindspaceAssets) {
+  fs.copyFileSync(path.join(mindspaceAssetsSrc, asset), path.join(mindspaceAssetsDest, asset));
+}
+console.log('✅ First-party Mindspace assets staged');
+
 const ptySrc = fs.realpathSync(path.join(here, 'node_modules', 'node-pty'));
 const ptyDest = path.join(here, '.package', 'node_modules', 'node-pty');
 fs.rmSync(ptyDest, { recursive: true, force: true });
