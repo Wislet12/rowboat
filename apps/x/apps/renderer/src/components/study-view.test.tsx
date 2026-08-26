@@ -34,6 +34,7 @@ function workspace(path: string, title: string, fact: string) {
       updatedAt: '2026-08-26T12:00:00.000Z',
       sources: [{ path: sourcePath, title: `${title} source`, enabled: true, contextMode: 'full' as const, addedAt: '2026-08-26T12:00:00.000Z', available: true, modifiedAt: 1 }],
     },
+    studySet: { id: 'default', title: `${title} study set`, description: '', sourcePaths: [sourcePath], activityConfig: { flashcardCount: 20, quizQuestionCount: 10, quizTypes: ['multiple-choice' as const], difficulty: 'adaptive' as const, topics: [], includeExplanations: true }, createdAt: '2026-08-26T12:00:00.000Z', updatedAt: '2026-08-26T12:00:00.000Z' },
     settings: { examDate: null, dailyGoalMinutes: 25, sessionMinutes: 25 },
     cards: [{ id: `${title}-card`, front: `Recall ${title}`, back: fact, sourceId: 'S1', sourcePath, sourceTitle: `${title} source` }],
     quiz: [],
@@ -74,12 +75,14 @@ describe('StudyView', () => {
   it('starts grounded chat and voice from the active study set', async () => {
     ;(window as unknown as { ipc: unknown }).ipc = {
       invoke: vi.fn(async (channel: string, args: { path: string }) => {
+        if (channel === 'knowledge:study:listSets') return [workspace(args.path, 'Cardiac Review', '').studySet]
         if (channel === 'knowledge:study:getWorkspace') return workspace(args.path, 'Cardiac Review', 'CARDIAC_ONLY_FACT')
         throw new Error(`Unexpected channel ${channel}`)
       }),
     }
     render(<StudyView tree={tree} notebookPath={NOTEBOOK_A} actions={actions} onOpenNotebook={vi.fn()} onOpenNotebookStudio={vi.fn()} onOpenNote={vi.fn()} onOpenSearch={vi.fn()} />)
 
+    fireEvent.click(await screen.findByRole('button', { name: /Cardiac Review study set/ }))
     fireEvent.click(await screen.findByRole('button', { name: 'Tutor in chat' }))
     fireEvent.click(screen.getByRole('button', { name: 'Start voice tutor' }))
 
@@ -90,11 +93,12 @@ describe('StudyView', () => {
 
   it('preserves Notebook Studio tools and organizes saved artifacts in Study', async () => {
     ;(window as unknown as { ipc: unknown }).ipc = {
-      invoke: vi.fn(async (_channel: string, args: { path: string }) => workspace(args.path, 'Cardiac Review', 'CARDIAC_ONLY_FACT')),
+      invoke: vi.fn(async (channel: string, args: { path: string }) => channel === 'knowledge:study:listSets' ? [workspace(args.path, 'Cardiac Review', '').studySet] : workspace(args.path, 'Cardiac Review', 'CARDIAC_ONLY_FACT')),
     }
     const onOpenNote = vi.fn()
     render(<StudyView tree={tree} notebookPath={NOTEBOOK_A} actions={actions} onOpenNotebook={vi.fn()} onOpenNotebookStudio={vi.fn()} onOpenNote={onOpenNote} onOpenSearch={vi.fn()} />)
 
+    fireEvent.click(await screen.findByRole('button', { name: /Cardiac Review study set/ }))
     expect(await screen.findByText('Notebook Studio connected')).toBeInTheDocument()
     for (const tool of ['Source summary', 'Study guide', 'FAQ', 'Timeline', 'Compare sources', 'Quiz me']) {
       expect(screen.getByRole('button', { name: new RegExp(`^${tool}\\b`, 'i') })).toBeInTheDocument()
@@ -106,11 +110,12 @@ describe('StudyView', () => {
     expect(onOpenNote).toHaveBeenCalledWith(`${NOTEBOOK_A}/Artifacts/source-summary.md`)
   })
 
-  it('discards a stale load when the active study set changes', async () => {
+  it('switches notebook context without showing the prior notebook', async () => {
     let resolveFirst: ((value: ReturnType<typeof workspace>) => void) | undefined
     const first = new Promise<ReturnType<typeof workspace>>((resolve) => { resolveFirst = resolve })
     ;(window as unknown as { ipc: unknown }).ipc = {
-      invoke: vi.fn(async (_channel: string, args: { path: string }) => {
+      invoke: vi.fn(async (channel: string, args: { path: string }) => {
+        if (channel === 'knowledge:study:listSets') return [workspace(args.path, args.path === NOTEBOOK_A ? 'Cardiac Review' : 'Community Health', '').studySet]
         if (args.path === NOTEBOOK_A) return first
         return workspace(NOTEBOOK_B, 'Community Health', 'COMMUNITY_ONLY_FACT')
       }),

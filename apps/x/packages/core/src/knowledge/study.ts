@@ -1,15 +1,45 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
-import { buildNotebookContext, getNotebook, type NotebookContextSnapshot, type NotebookDescriptor } from './notebooks.js';
+import { buildNotebookContextFromManifest, getNotebook, type NotebookContextSnapshot, type NotebookDescriptor } from './notebooks.js';
 import { exists, readFile, rename, resolveWorkspacePath, writeFile } from '../workspace/workspace.js';
 import { withFileLock } from './file-lock.js';
 
 const STUDY_STATE_FILE = '.rowboat-study.json';
+const STUDY_SETS_FILE = '.rowboat-study-sets.json';
+const STUDY_SET_STATE_DIR = '.rowboat-study-sets';
 const MAX_STUDY_CARDS = 80;
 const MAX_STUDY_SESSIONS = 730;
 const MAX_WORKSPACE_CACHE = 24;
 const workspaceCache = new Map<string, StudyWorkspace>();
+
+export const StudyActivityConfigSchema = z.object({
+    flashcardCount: z.number().int().min(5).max(80).default(20),
+    quizQuestionCount: z.number().int().min(5).max(50).default(10),
+    quizTypes: z.array(z.enum(['multiple-choice', 'true-false', 'short-answer'])).min(1).default(['multiple-choice']),
+    difficulty: z.enum(['adaptive', 'introductory', 'intermediate', 'advanced']).default('adaptive'),
+    topics: z.array(z.string().min(1).max(120)).max(20).default([]),
+    includeExplanations: z.boolean().default(true),
+});
+
+export const StudySetSchema = z.object({
+    id: z.string().min(1).max(100),
+    title: z.string().min(1).max(160),
+    description: z.string().max(2_000).default(''),
+    sourcePaths: z.array(z.string().min(1)).default([]),
+    activityConfig: StudyActivityConfigSchema.default({
+        flashcardCount: 20,
+        quizQuestionCount: 10,
+        quizTypes: ['multiple-choice'],
+        difficulty: 'adaptive',
+        topics: [],
+        includeExplanations: true,
+    }),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+});
+const StudySetRegistrySchema = z.object({ version: z.literal(1), sets: z.array(StudySetSchema) });
+export type StudySet = z.infer<typeof StudySetSchema>;
 
 export const StudyRatingSchema = z.enum(['again', 'hard', 'good', 'easy']);
 export type StudyRating = z.infer<typeof StudyRatingSchema>;
@@ -79,6 +109,7 @@ export type StudyQuizQuestion = {
 
 export type StudyWorkspace = {
     notebook: NotebookDescriptor;
+    studySet: StudySet;
     settings: StudySettings;
     cards: StudyCard[];
     quiz: StudyQuizQuestion[];
@@ -106,8 +137,88 @@ type StudySection = {
     body: string;
 };
 
-function statePath(notebookPath: string): string {
-    return `${notebookPath}/${STUDY_STATE_FILE}`;
+function registryPath(notebookPath: string): string {
+    return `${notebookPath}/${STUDY_SETS_FILE}`;
+}
+
+function statePath(notebookPath: string, studySetId?: string): string {
+    return studySetId ? `${notebookPath}/${STUDY_SET_STATE_DIR}/${studySetId}.json` : `${notebookPath}/${STUDY_STATE_FILE}`;
+}
+
+function defaultStudySet(notebook: NotebookDescriptor): StudySet {
+    const now = notebook.createdAt || new Date().toISOString();
+    return StudySetSchema.parse({
+        id: 'default',
+        title: `${notebook.title} study set`,
+        description: 'Migrated from the original notebook study workspace.',
+        sourcePaths: notebook.sources.map((source) => source.path),
+        createdAt: now,
+        updatedAt: notebook.updatedAt || now,
+    });
+}
+
+async function loadRegistry(notebookPath: string): Promise<{ version: 1; sets: StudySet[] }> {
+    const notebook = await getNotebook(notebookPath);
+    if (!(await exists(registryPath(notebookPath))).exists) {
+        const registry = { version: 1 as const, sets: [defaultStudySet(notebook)] };
+        await writeFile(registryPath(notebookPath), `${JSON.stringify(registry, null, 2)}\n`, { encoding: 'utf8', mkdirp: true, atomic: true });
+        return registry;
+    }
+    return StudySetRegistrySchema.parse(JSON.parse((await readFile(registryPath(notebookPath))).data));
+}
+
+async function saveRegistry(notebookPath: string, sets: StudySet[]): Promise<void> {
+    await writeFile(registryPath(notebookPath), `${JSON.stringify({ version: 1, sets }, null, 2)}\n`, { encoding: 'utf8', mkdirp: true, atomic: true });
+}
+
+export async function listStudySets(notebookPath: string): Promise<StudySet[]> {
+    return (await loadRegistry(notebookPath)).sets;
+}
+
+type StudySetMutation = Partial<Pick<StudySet, 'title' | 'description' | 'sourcePaths'>> & { activityConfig?: Partial<StudySet['activityConfig']> };
+
+export async function createStudySet(notebookPath: string, input: Pick<StudySet, 'title'> & StudySetMutation): Promise<StudySet> {
+    return withStudyLock(notebookPath, async () => {
+        const [registry, notebook] = await Promise.all([loadRegistry(notebookPath), getNotebook(notebookPath)]);
+        const allowed = new Set(notebook.sources.map((source) => source.path));
+        const now = new Date().toISOString();
+        const studySet = StudySetSchema.parse({
+            id: randomUUID(), title: input.title, description: input.description ?? '',
+            sourcePaths: (input.sourcePaths ?? notebook.sources.map((source) => source.path)).filter((path) => allowed.has(path)),
+            activityConfig: input.activityConfig, createdAt: now, updatedAt: now,
+        });
+        await saveRegistry(notebookPath, [...registry.sets, studySet]);
+        return studySet;
+    });
+}
+
+export async function updateStudySet(notebookPath: string, studySetId: string, input: StudySetMutation): Promise<StudySet> {
+    return withStudyLock(notebookPath, async () => {
+        const [registry, notebook] = await Promise.all([loadRegistry(notebookPath), getNotebook(notebookPath)]);
+        const current = registry.sets.find((set) => set.id === studySetId);
+        if (!current) throw new Error('Study set not found.');
+        const allowed = new Set(notebook.sources.map((source) => source.path));
+        const updated = StudySetSchema.parse({ ...current, ...input, activityConfig: { ...current.activityConfig, ...input.activityConfig }, sourcePaths: (input.sourcePaths ?? current.sourcePaths).filter((path) => allowed.has(path)), updatedAt: new Date().toISOString() });
+        await saveRegistry(notebookPath, registry.sets.map((set) => set.id === studySetId ? updated : set));
+        workspaceCache.delete(`${notebookPath}::${studySetId}`);
+        return updated;
+    });
+}
+
+export async function deleteStudySet(notebookPath: string, studySetId: string): Promise<{ ok: true; recoveryPath: string | null }> {
+    return withStudyLock(notebookPath, async () => {
+        const registry = await loadRegistry(notebookPath);
+        const current = registry.sets.find((set) => set.id === studySetId);
+        if (!current) throw new Error('Study set not found.');
+        const recoveryPath = `${notebookPath}/.trash/study-set-${studySetId}-${timestampSlug()}.json`;
+        let state: unknown = null;
+        const currentStatePath = statePath(notebookPath, studySetId === 'default' ? undefined : studySetId);
+        if ((await exists(currentStatePath)).exists) state = JSON.parse((await readFile(currentStatePath)).data);
+        await writeFile(recoveryPath, `${JSON.stringify({ studySet: current, state }, null, 2)}\n`, { encoding: 'utf8', mkdirp: true, atomic: true });
+        await saveRegistry(notebookPath, registry.sets.filter((set) => set.id !== studySetId));
+        workspaceCache.delete(`${notebookPath}::${studySetId}`);
+        return { ok: true, recoveryPath };
+    });
 }
 
 function timestampSlug(now = new Date()): string {
@@ -325,9 +436,9 @@ function newStudyState(now = new Date()): StudyState {
     });
 }
 
-async function loadStudyState(notebookPath: string): Promise<StudyState> {
+async function loadStudyState(notebookPath: string, studySetId?: string): Promise<StudyState> {
     await getNotebook(notebookPath);
-    const path = statePath(notebookPath);
+    const path = statePath(notebookPath, studySetId && studySetId !== 'default' ? studySetId : undefined);
     if (!(await exists(path)).exists) return newStudyState();
     try {
         return StudyStateSchema.parse(JSON.parse((await readFile(path)).data));
@@ -338,10 +449,10 @@ async function loadStudyState(notebookPath: string): Promise<StudyState> {
     }
 }
 
-async function persistStudyState(notebookPath: string, state: StudyState): Promise<StudyState> {
+async function persistStudyState(notebookPath: string, state: StudyState, studySetId?: string): Promise<StudyState> {
     await getNotebook(notebookPath);
     const parsed = StudyStateSchema.parse({ ...state, updatedAt: new Date().toISOString() });
-    await writeFile(statePath(notebookPath), `${JSON.stringify(parsed, null, 2)}\n`, {
+    await writeFile(statePath(notebookPath, studySetId && studySetId !== 'default' ? studySetId : undefined), `${JSON.stringify(parsed, null, 2)}\n`, {
         encoding: 'utf8',
         mkdirp: true,
         atomic: true,
@@ -397,17 +508,18 @@ function buildStudyProgress(state: StudyState, cards: StudyCard[], now: Date): S
     };
 }
 
-async function composeStudyWorkspace(notebookPath: string, state: StudyState, now = new Date()): Promise<StudyWorkspace> {
-    const [notebook, context] = await Promise.all([
-        getNotebook(notebookPath),
-        buildNotebookContext(notebookPath, ''),
-    ]);
-    const cards = buildStudyCards(context);
+async function composeStudyWorkspace(notebookPath: string, studySet: StudySet, state: StudyState, now = new Date()): Promise<StudyWorkspace> {
+    const notebook = await getNotebook(notebookPath);
+    const selected = new Set(studySet.sourcePaths);
+    const scopedNotebook = { ...notebook, sources: notebook.sources.map((source) => ({ ...source, enabled: source.enabled && selected.has(source.path) })) };
+    const context = await buildNotebookContextFromManifest(scopedNotebook, studySet.activityConfig.topics.join(' '), async (sourcePath) => (await readFile(sourcePath)).data);
+    const cards = buildStudyCards(context).slice(0, studySet.activityConfig.flashcardCount);
     const workspace = {
         notebook,
+        studySet,
         settings: state.settings,
         cards,
-        quiz: buildStudyQuiz(cards),
+        quiz: buildStudyQuiz(cards).slice(0, studySet.activityConfig.quizQuestionCount),
         progress: buildStudyProgress(state, cards, now),
         retrievalEvidence: context.retrievalEvidence,
         unavailableSources: context.unavailableSources,
@@ -415,8 +527,9 @@ async function composeStudyWorkspace(notebookPath: string, state: StudyState, no
         lastRecoveryPath: state.lastRecoveryPath,
         generatedAt: now.toISOString(),
     };
-    workspaceCache.delete(notebookPath);
-    workspaceCache.set(notebookPath, workspace);
+    const cacheKey = `${notebookPath}::${studySet.id}`;
+    workspaceCache.delete(cacheKey);
+    workspaceCache.set(cacheKey, workspace);
     if (workspaceCache.size > MAX_WORKSPACE_CACHE) {
         const oldest = workspaceCache.keys().next().value;
         if (oldest) workspaceCache.delete(oldest);
@@ -430,40 +543,52 @@ function sourceRevision(notebook: NotebookDescriptor): string {
         .join('|');
 }
 
-async function composeOrReuseStudyWorkspace(notebookPath: string, state: StudyState, now = new Date()): Promise<StudyWorkspace> {
-    const cached = workspaceCache.get(notebookPath);
-    if (!cached) return composeStudyWorkspace(notebookPath, state, now);
+async function composeOrReuseStudyWorkspace(notebookPath: string, studySet: StudySet, state: StudyState, now = new Date()): Promise<StudyWorkspace> {
+    const cacheKey = `${notebookPath}::${studySet.id}`;
+    const cached = workspaceCache.get(cacheKey);
+    if (!cached) return composeStudyWorkspace(notebookPath, studySet, state, now);
     const notebook = await getNotebook(notebookPath);
     if (sourceRevision(cached.notebook) !== sourceRevision(notebook)) {
-        return composeStudyWorkspace(notebookPath, state, now);
+        return composeStudyWorkspace(notebookPath, studySet, state, now);
     }
-    workspaceCache.delete(notebookPath);
+    workspaceCache.delete(cacheKey);
     const workspace: StudyWorkspace = {
         ...cached,
         notebook,
+        studySet,
         settings: state.settings,
         progress: buildStudyProgress(state, cached.cards, now),
         lastRecoveryPath: state.lastRecoveryPath,
         generatedAt: now.toISOString(),
     };
-    workspaceCache.set(notebookPath, workspace);
+    workspaceCache.set(cacheKey, workspace);
     return workspace;
 }
 
-export async function getStudyWorkspace(notebookPath: string): Promise<StudyWorkspace> {
-    const state = await loadStudyState(notebookPath);
-    return composeOrReuseStudyWorkspace(notebookPath, state);
+async function resolveStudySet(notebookPath: string, studySetId?: string): Promise<StudySet> {
+    const sets = await listStudySets(notebookPath);
+    const studySet = studySetId ? sets.find((set) => set.id === studySetId) : sets[0];
+    if (!studySet) throw new Error('Create a study set in this notebook to begin.');
+    return studySet;
+}
+
+export async function getStudyWorkspace(notebookPath: string, studySetId?: string): Promise<StudyWorkspace> {
+    const studySet = await resolveStudySet(notebookPath, studySetId);
+    const state = await loadStudyState(notebookPath, studySet.id);
+    return composeOrReuseStudyWorkspace(notebookPath, studySet, state);
 }
 
 export async function updateStudySettings(
     notebookPath: string,
     input: Partial<StudySettings>,
+    studySetId?: string,
 ): Promise<StudyWorkspace> {
     return withStudyLock(notebookPath, async () => {
-        const state = await loadStudyState(notebookPath);
+        const studySet = await resolveStudySet(notebookPath, studySetId);
+        const state = await loadStudyState(notebookPath, studySet.id);
         const settings = StudySettingsSchema.parse({ ...state.settings, ...input });
-        const saved = await persistStudyState(notebookPath, { ...state, settings });
-        return composeOrReuseStudyWorkspace(notebookPath, saved);
+        const saved = await persistStudyState(notebookPath, { ...state, settings }, studySet.id);
+        return composeOrReuseStudyWorkspace(notebookPath, studySet, saved);
     });
 }
 
@@ -472,12 +597,14 @@ export async function reviewStudyCard(
     cardId: string,
     ratingInput: StudyRating,
     idempotencyKeyInput?: string,
+    studySetId?: string,
 ): Promise<StudyWorkspace> {
     return withStudyLock(notebookPath, async () => {
         const rating = StudyRatingSchema.parse(ratingInput);
         const idempotencyKey = idempotencyKeyInput?.trim() || randomUUID();
-        const state = await loadStudyState(notebookPath);
-        const workspace = await composeOrReuseStudyWorkspace(notebookPath, state);
+        const studySet = await resolveStudySet(notebookPath, studySetId);
+        const state = await loadStudyState(notebookPath, studySet.id);
+        const workspace = await composeOrReuseStudyWorkspace(notebookPath, studySet, state);
         if (!workspace.cards.some((card) => card.id === cardId)) {
             throw new Error('That study card is no longer available from the selected sources.');
         }
@@ -488,7 +615,7 @@ export async function reviewStudyCard(
             [cardId]: applyStudyRating(state.cards[cardId], rating),
         };
         const reviewKeys = [...state.reviewKeys, reviewKey].slice(-5_000);
-        const saved = await persistStudyState(notebookPath, { ...state, cards, reviewKeys });
+        const saved = await persistStudyState(notebookPath, { ...state, cards, reviewKeys }, studySet.id);
         return {
             ...workspace,
             progress: buildStudyProgress(saved, workspace.cards, new Date()),
@@ -502,12 +629,14 @@ export async function recordStudySession(
     minutesInput: number,
     modeInput: z.infer<typeof StudySessionSchema>['mode'],
     idempotencyKeyInput?: string,
+    studySetId?: string,
 ): Promise<StudyWorkspace> {
     return withStudyLock(notebookPath, async () => {
-        const state = await loadStudyState(notebookPath);
+        const studySet = await resolveStudySet(notebookPath, studySetId);
+        const state = await loadStudyState(notebookPath, studySet.id);
         const idempotencyKey = idempotencyKeyInput?.trim() || randomUUID();
         if (state.sessions.some((session) => session.idempotencyKey === idempotencyKey)) {
-            return composeOrReuseStudyWorkspace(notebookPath, state);
+            return composeOrReuseStudyWorkspace(notebookPath, studySet, state);
         }
         const now = new Date();
         const session = StudySessionSchema.parse({
@@ -519,15 +648,16 @@ export async function recordStudySession(
             mode: modeInput,
         });
         const sessions = [...state.sessions, session].slice(-MAX_STUDY_SESSIONS);
-        const saved = await persistStudyState(notebookPath, { ...state, sessions });
-        return composeOrReuseStudyWorkspace(notebookPath, saved, now);
+        const saved = await persistStudyState(notebookPath, { ...state, sessions }, studySet.id);
+        return composeOrReuseStudyWorkspace(notebookPath, studySet, saved, now);
     });
 }
 
-export async function resetStudyProgress(notebookPath: string): Promise<StudyWorkspace> {
+export async function resetStudyProgress(notebookPath: string, studySetId?: string): Promise<StudyWorkspace> {
     return withStudyLock(notebookPath, async () => {
-        const state = await loadStudyState(notebookPath);
-        const recoveryPath = `${notebookPath}/.rowboat-study.reset.${timestampSlug()}.json`;
+        const studySet = await resolveStudySet(notebookPath, studySetId);
+        const state = await loadStudyState(notebookPath, studySet.id);
+        const recoveryPath = `${notebookPath}/.rowboat-study.${studySet.id}.reset.${timestampSlug()}.json`;
         await writeFile(recoveryPath, `${JSON.stringify(state, null, 2)}\n`, {
             encoding: 'utf8',
             mkdirp: true,
@@ -539,7 +669,7 @@ export async function resetStudyProgress(notebookPath: string): Promise<StudyWor
             reviewKeys: [],
             sessions: [],
             lastRecoveryPath: recoveryPath,
-        });
-        return composeOrReuseStudyWorkspace(notebookPath, saved);
+        }, studySet.id);
+        return composeOrReuseStudyWorkspace(notebookPath, studySet, saved);
     });
 }

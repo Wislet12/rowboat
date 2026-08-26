@@ -149,6 +149,18 @@ const StudySettingsSchema = z.object({
   dailyGoalMinutes: z.number().int().min(5).max(480),
   sessionMinutes: z.number().int().min(5).max(180),
 });
+const StudyActivityConfigSchema = z.object({
+  flashcardCount: z.number().int().min(5).max(80),
+  quizQuestionCount: z.number().int().min(5).max(50),
+  quizTypes: z.array(z.enum(['multiple-choice', 'true-false', 'short-answer'])).min(1),
+  difficulty: z.enum(['adaptive', 'introductory', 'intermediate', 'advanced']),
+  topics: z.array(z.string()),
+  includeExplanations: z.boolean(),
+});
+const StudySetSchema = z.object({
+  id: z.string(), title: z.string(), description: z.string(), sourcePaths: z.array(RelPath),
+  activityConfig: StudyActivityConfigSchema, createdAt: z.string(), updatedAt: z.string(),
+});
 const StudyCardProgressSchema = z.object({
   repetitions: z.number().int().nonnegative(),
   lapses: z.number().int().nonnegative(),
@@ -177,6 +189,7 @@ const StudyQuizQuestionSchema = z.object({
 });
 const StudyWorkspaceSchema = z.object({
   notebook: NotebookDescriptorSchema,
+  studySet: StudySetSchema,
   settings: StudySettingsSchema,
   cards: z.array(StudyCardSchema),
   quiz: z.array(StudyQuizQuestionSchema),
@@ -2289,12 +2302,29 @@ const ipcSchemas = {
     res: NotebookContextSnapshotSchema,
   },
   'knowledge:study:getWorkspace': {
-    req: z.object({ path: RelPath }),
+    req: z.object({ path: RelPath, studySetId: z.string().optional() }),
     res: StudyWorkspaceSchema,
+  },
+  'knowledge:study:listSets': {
+    req: z.object({ path: RelPath }),
+    res: z.array(StudySetSchema),
+  },
+  'knowledge:study:createSet': {
+    req: z.object({ path: RelPath, title: z.string().min(1).max(160), description: z.string().max(2000).optional(), sourcePaths: z.array(RelPath).optional(), activityConfig: StudyActivityConfigSchema.partial().optional() }),
+    res: StudySetSchema,
+  },
+  'knowledge:study:updateSet': {
+    req: z.object({ path: RelPath, studySetId: z.string().min(1), title: z.string().min(1).max(160).optional(), description: z.string().max(2000).optional(), sourcePaths: z.array(RelPath).optional(), activityConfig: StudyActivityConfigSchema.partial().optional() }),
+    res: StudySetSchema,
+  },
+  'knowledge:study:deleteSet': {
+    req: z.object({ path: RelPath, studySetId: z.string().min(1) }),
+    res: z.object({ ok: z.literal(true), recoveryPath: RelPath.nullable() }),
   },
   'knowledge:study:updateSettings': {
     req: z.object({
       path: RelPath,
+      studySetId: z.string().optional(),
       examDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
       dailyGoalMinutes: z.number().int().min(5).max(480).optional(),
       sessionMinutes: z.number().int().min(5).max(180).optional(),
@@ -2304,6 +2334,7 @@ const ipcSchemas = {
   'knowledge:study:reviewCard': {
     req: z.object({
       path: RelPath,
+      studySetId: z.string().optional(),
       cardId: z.string().min(1).max(200),
       rating: z.enum(['again', 'hard', 'good', 'easy']),
       idempotencyKey: z.string().min(1).max(200),
@@ -2313,6 +2344,7 @@ const ipcSchemas = {
   'knowledge:study:recordSession': {
     req: z.object({
       path: RelPath,
+      studySetId: z.string().optional(),
       minutes: z.number().int().min(1).max(720),
       mode: z.enum(['flashcards', 'quiz', 'tutor', 'review', 'other']),
       idempotencyKey: z.string().min(1).max(200),
@@ -2320,7 +2352,7 @@ const ipcSchemas = {
     res: StudyWorkspaceSchema,
   },
   'knowledge:study:resetProgress': {
-    req: z.object({ path: RelPath }),
+    req: z.object({ path: RelPath, studySetId: z.string().optional() }),
     res: StudyWorkspaceSchema,
   },
   'knowledge:saveChatOutput': {

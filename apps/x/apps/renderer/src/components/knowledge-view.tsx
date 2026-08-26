@@ -305,15 +305,6 @@ export function KnowledgeView({
           </div>
           <button
             type="button"
-            onClick={() => setCreateNotebookOpen(true)}
-            className="inline-flex h-9 items-center gap-2 rounded-lg bg-foreground px-3 text-sm font-medium text-background transition-opacity hover:opacity-85"
-            aria-label="Create a research notebook"
-          >
-            <BookOpen className="size-4" />
-            New notebook
-          </button>
-          <button
-            type="button"
             onClick={() => { void actions.importNotes(currentFolder?.path) }}
             className="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-background px-3 text-sm font-medium text-foreground transition-colors hover:bg-accent"
             aria-label={currentNotebookPath ? 'Add sources to notebook' : 'Import notes into Brain'}

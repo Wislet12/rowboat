@@ -149,10 +149,14 @@ import {
   updateNotebookSource,
 } from '@x/core/dist/knowledge/notebooks.js';
 import {
+  createStudySet,
+  deleteStudySet,
   getStudyWorkspace,
+  listStudySets,
   recordStudySession,
   resetStudyProgress,
   reviewStudyCard,
+  updateStudySet,
   updateStudySettings,
 } from '@x/core/dist/knowledge/study.js';
 import { versionHistory, voice } from '@x/core';
@@ -2395,23 +2399,35 @@ export function setupIpcHandlers() {
       return buildNotebookContext(args.path, args.query);
     },
     'knowledge:study:getWorkspace': async (_event, args) => {
-      return getStudyWorkspace(args.path);
+      return getStudyWorkspace(args.path, args.studySetId);
+    },
+    'knowledge:study:listSets': async (_event, args) => {
+      return listStudySets(args.path);
+    },
+    'knowledge:study:createSet': async (_event, args) => {
+      return createStudySet(args.path, args);
+    },
+    'knowledge:study:updateSet': async (_event, args) => {
+      return updateStudySet(args.path, args.studySetId, args);
+    },
+    'knowledge:study:deleteSet': async (_event, args) => {
+      return deleteStudySet(args.path, args.studySetId);
     },
     'knowledge:study:updateSettings': async (_event, args) => {
       return updateStudySettings(args.path, {
         ...(args.examDate !== undefined ? { examDate: args.examDate } : {}),
         ...(args.dailyGoalMinutes !== undefined ? { dailyGoalMinutes: args.dailyGoalMinutes } : {}),
         ...(args.sessionMinutes !== undefined ? { sessionMinutes: args.sessionMinutes } : {}),
-      });
+      }, args.studySetId);
     },
     'knowledge:study:reviewCard': async (_event, args) => {
-      return reviewStudyCard(args.path, args.cardId, args.rating, args.idempotencyKey);
+      return reviewStudyCard(args.path, args.cardId, args.rating, args.idempotencyKey, args.studySetId);
     },
     'knowledge:study:recordSession': async (_event, args) => {
-      return recordStudySession(args.path, args.minutes, args.mode, args.idempotencyKey);
+      return recordStudySession(args.path, args.minutes, args.mode, args.idempotencyKey, args.studySetId);
     },
     'knowledge:study:resetProgress': async (_event, args) => {
-      return resetStudyProgress(args.path);
+      return resetStudyProgress(args.path, args.studySetId);
     },
     'knowledge:saveChatOutput': async (_event, args) => {
       const saved = await saveChatOutput(args);
