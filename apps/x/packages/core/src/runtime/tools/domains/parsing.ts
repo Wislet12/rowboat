@@ -21,13 +21,16 @@ import { BuiltinToolsSchema } from "../types.js";
 
 
 
-// Parser libraries are loaded dynamically inside parseFileLocally() to avoid
-// pulling pdfjs-dist's DOM polyfills into startup. Keeping the specifier as a
-// runtime value prevents static bundling while still giving Node/Vitest a real
-// dynamic-import callback (the historical new Function form failed in VM
-// modules with "A dynamic import callback was not specified").
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const _importDynamic = (moduleName: string): Promise<any> => import(moduleName);
+// Keep heavyweight parsers lazy so pdfjs does not run during app startup, but
+// keep every specifier literal so esbuild can include the parser in Rowboat's
+// self-contained main-process bundle. A variable `import(moduleName)` works in
+// source/tests but leaves a bare runtime package lookup in the packaged app.
+const loadPdfParser = () => import('pdf-parse');
+const loadPdfWorker = () => import('pdfjs-dist/legacy/build/pdf.worker.mjs');
+const loadDomMatrix = () => import('@thednp/dommatrix');
+const loadSpreadsheetParser = () => import('xlsx');
+const loadCsvParser = () => import('papaparse');
+const loadWordParser = () => import('mammoth');
 
 export const LLMPARSE_MIME_TYPES: Record<string, string> = {
     '.pdf': 'application/pdf',
@@ -114,7 +117,21 @@ export async function parseFileLocally(filePath: string): Promise<ParsedFileResu
         const { buffer, resolvedPath } = await files.readBuffer(filePath);
 
         if (ext === '.pdf') {
-            const { PDFParse } = await _importDynamic("pdf-parse");
+            // @napi-rs/canvas does not publish a Windows ARM64 binary. PDF.js
+            // only needs DOMMatrix during text-only imports, so provide the
+            // maintained zero-dependency DOMMatrix shim before PDF.js loads.
+            const { default: DomMatrix } = await loadDomMatrix();
+            const runtimeGlobals = globalThis as unknown as Record<string, unknown>;
+            runtimeGlobals.DOMMatrix ||= DomMatrix;
+
+            // pdfjs uses a fake worker in Electron's main process. Initialize the
+            // worker handler from a literal import so esbuild embeds it in the
+            // self-contained main.cjs instead of looking for ./pdf.worker.mjs
+            // beside the packaged application at runtime.
+            const [{ PDFParse }] = await Promise.all([
+                loadPdfParser(),
+                loadPdfWorker(),
+            ]);
             const parser = new PDFParse({ data: new Uint8Array(buffer) });
             try {
                 const textResult = await parser.getText();
@@ -137,7 +154,7 @@ export async function parseFileLocally(filePath: string): Promise<ParsedFileResu
         }
 
         if (LOCAL_SPREADSHEET_EXTENSIONS.has(ext)) {
-            const XLSX = await _importDynamic("xlsx");
+            const XLSX = await loadSpreadsheetParser();
             const workbook = XLSX.read(buffer, { type: 'buffer' });
             const sheets: Record<string, string> = {};
             for (const sheetName of workbook.SheetNames) {
@@ -160,7 +177,7 @@ export async function parseFileLocally(filePath: string): Promise<ParsedFileResu
         }
 
         if (ext === '.csv') {
-            const Papa = (await _importDynamic("papaparse")).default;
+            const Papa = (await loadCsvParser()).default;
             const text = buffer.toString('utf8');
             const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
             return {
@@ -177,7 +194,7 @@ export async function parseFileLocally(filePath: string): Promise<ParsedFileResu
         }
 
         if (LOCAL_WORD_EXTENSIONS.has(ext)) {
-            const mammoth = (await _importDynamic("mammoth")).default;
+            const mammoth = (await loadWordParser()).default;
             const docResult = await mammoth.extractRawText({ buffer });
             return {
                 success: true,

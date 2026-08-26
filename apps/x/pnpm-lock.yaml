@@ -475,6 +475,9 @@ importers:
       '@react-pdf/renderer':
         specifier: ^4.3.2
         version: 4.3.2(react@19.2.3)
+      '@thednp/dommatrix':
+        specifier: 3.1.1
+        version: 3.1.1
       '@types/react':
         specifier: ^19.2.7
         version: 19.2.7
@@ -532,6 +535,9 @@ importers:
       pdf-parse:
         specifier: ^2.4.5
         version: 2.4.5
+      pdfjs-dist:
+        specifier: 5.4.296
+        version: 5.4.296
       posthog-node:
         specifier: ^4.18.0
         version: 4.18.0
@@ -3839,6 +3845,9 @@ packages:
         optional: true
       '@types/react-dom':
         optional: true
+
+  '@thednp/dommatrix@3.1.1':
+    resolution: {integrity: sha512-LQw9A56KeDYN9aPFGjad2xTpGNnsIsvq98k1l28HNsvi+SuRFY6M5ET3f0SFrtssOKOcvgqmObztR0/dc6kSZQ==}
 
   '@tiptap/core@3.22.4':
     resolution: {integrity: sha512-vGIGm/HpqLg8EAAQXQ+koV+/S828OEpzocfWcPOwo1u2QUVf9dQG47Yy6JJ8zFFaJwfv4dBcOXli+7BrJwsxDQ==}
@@ -13331,6 +13340,8 @@ snapshots:
     optionalDependencies:
       '@types/react': 19.2.7
       '@types/react-dom': 19.2.3(@types/react@19.2.7)
+
+  '@thednp/dommatrix@3.1.1': {}
 
   '@tiptap/core@3.22.4(@tiptap/pm@3.22.4)':
     dependencies:

@@ -102,4 +102,111 @@ describe('local multi-format note parsing', () => {
         expect(spreadsheet.content).toContain('Potassium');
         expect(spreadsheet.content).toContain('4.2');
     });
+
+    it('extracts CSV, RTF, OpenDocument, EPUB, and Jupyter notes locally', async () => {
+        const directory = await temporaryDirectory();
+        const fixtures: Array<{ name: string; data: Buffer; expected: string }> = [
+            {
+                name: 'medications.csv',
+                data: Buffer.from('Medication,Dose\nAspirin,81 mg\n'),
+                expected: 'Aspirin',
+            },
+            {
+                name: 'priorities.rtf',
+                data: Buffer.from(String.raw`{\rtf1\ansi Nursing priorities\par Airway first}`),
+                expected: 'Airway first',
+            },
+            {
+                name: 'renal-notes.odt',
+                data: await createZip({
+                    'content.xml': '<office:document><text:h text:outline-level="1">Renal review</text:h><text:p>Monitor intake and output.</text:p></office:document>',
+                }),
+                expected: 'Monitor intake and output.',
+            },
+            {
+                name: 'assessment.odp',
+                data: await createZip({
+                    'content.xml': '<office:document><draw:page draw:name="Assessment"><text:p>Airway first</text:p></draw:page></office:document>',
+                }),
+                expected: 'Airway first',
+            },
+            {
+                name: 'safety.epub',
+                data: await createZip({
+                    'OEBPS/chapter.xhtml': '<html><body><h1>Safety</h1><p>Verify two identifiers.</p></body></html>',
+                }),
+                expected: 'Verify two identifiers.',
+            },
+            {
+                name: 'hemodynamics.ipynb',
+                data: Buffer.from(JSON.stringify({
+                    metadata: { kernelspec: { language: 'python' } },
+                    cells: [{ cell_type: 'markdown', source: ['Review mean arterial pressure.'] }],
+                })),
+                expected: 'mean arterial pressure',
+            },
+        ];
+
+        for (const fixture of fixtures) {
+            const filePath = path.join(directory, fixture.name);
+            await fs.writeFile(filePath, fixture.data);
+            const parsed = await parseFileLocally(filePath);
+            expect(parsed.success, `${fixture.name}: ${parsed.error ?? 'unknown error'}`).toBe(true);
+            expect(parsed.content).toContain(fixture.expected);
+        }
+    });
+
+    it('accepts every modern Office and OpenDocument extension routed to a local parser', async () => {
+        const directory = await temporaryDirectory();
+        const wordArchive = await createZip({
+            '[Content_Types].xml': '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+            '_rels/.rels': '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+            'word/document.xml': '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Word alias content</w:t></w:r></w:p></w:body></w:document>',
+        });
+        const presentationArchive = await createZip({
+            'ppt/slides/slide1.xml': '<p:sld><a:p><a:r><a:t>Presentation alias content</a:t></a:r></a:p></p:sld>',
+        });
+        const textDocumentArchive = await createZip({
+            'content.xml': '<office:document><text:p>OpenDocument text alias content</text:p></office:document>',
+        });
+        const presentationDocumentArchive = await createZip({
+            'content.xml': '<office:document><draw:page draw:name="Alias"><text:p>OpenDocument presentation alias content</text:p></draw:page></office:document>',
+        });
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([['Alias'], ['Spreadsheet content']]), 'Sheet1');
+        const xlsxBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+        const xlsBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'biff8' }) as Buffer;
+        const odsBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'ods' }) as Buffer;
+
+        const cases: Array<{ extensions: string[]; data: Buffer; expected: string }> = [
+            { extensions: ['docx', 'docm', 'dotx', 'dotm'], data: wordArchive, expected: 'Word alias content' },
+            { extensions: ['pptx', 'pptm', 'ppsx', 'ppsm', 'potx', 'potm'], data: presentationArchive, expected: 'Presentation alias content' },
+            { extensions: ['xlsx', 'xlsm', 'xltx', 'xltm'], data: xlsxBuffer, expected: 'Spreadsheet content' },
+            { extensions: ['xls'], data: xlsBuffer, expected: 'Spreadsheet content' },
+            { extensions: ['ods', 'ots'], data: odsBuffer, expected: 'Spreadsheet content' },
+            { extensions: ['odt', 'ott'], data: textDocumentArchive, expected: 'OpenDocument text alias content' },
+            { extensions: ['odp', 'otp'], data: presentationDocumentArchive, expected: 'OpenDocument presentation alias content' },
+        ];
+
+        for (const testCase of cases) {
+            for (const extension of testCase.extensions) {
+                const filePath = path.join(directory, `notes.${extension}`);
+                await fs.writeFile(filePath, testCase.data);
+                const parsed = await parseFileLocally(filePath);
+                expect(parsed.success, `${extension}: ${parsed.error ?? 'unknown error'}`).toBe(true);
+                expect(parsed.format).toBe(extension);
+                expect(parsed.content).toContain(testCase.expected);
+            }
+        }
+    });
+
+    const operatorPdfPath = process.env.ROWBOAT_VERIFY_PDF;
+    if (operatorPdfPath) {
+        it('extracts the operator-provided PDF used in packaged-app verification', async () => {
+            const parsed = await parseFileLocally(operatorPdfPath);
+            expect(parsed.success, parsed.error).toBe(true);
+            expect(parsed.format).toBe('pdf');
+            expect(parsed.content?.trim().length).toBeGreaterThan(0);
+        });
+    }
 });

@@ -54,6 +54,21 @@ await esbuild.build({
   },
 });
 
+// Local note import must remain self-contained. A computed dynamic import can
+// evade esbuild and pass source tests while crashing only after packaging with
+// `Cannot find package 'pdf-parse' imported from ...main.cjs`. Fail the build
+// if any JavaScript document parser is left as a bare runtime dependency.
+const mainBundlePath = path.resolve('./.package/dist/main.cjs');
+const mainBundle = await readFile(mainBundlePath, 'utf8');
+const bundledDocumentParsers = ['@thednp/dommatrix', 'pdf-parse', 'pdfjs-dist', 'xlsx', 'papaparse', 'mammoth'];
+const unresolvedDocumentParsers = bundledDocumentParsers.filter((packageName) => {
+  const escaped = packageName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:import\\(|require\\()\\s*["']${escaped}["']\\s*\\)`).test(mainBundle);
+});
+if (unresolvedDocumentParsers.length > 0) {
+  throw new Error(`Document parsers escaped the self-contained main bundle: ${unresolvedDocumentParsers.join(', ')}`);
+}
+
 // Ship node-pty next to the bundle. Resolve through pnpm's symlink to the real
 // package dir and copy only what's needed at runtime (compiled JS + prebuilt
 // binaries). The macOS spawn-helper must be executable — pnpm extraction drops
