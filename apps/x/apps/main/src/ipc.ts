@@ -154,6 +154,7 @@ import {
   getStudyWorkspace,
   listStudySets,
   recordStudySession,
+  removeSourceFromStudySets,
   resetStudyProgress,
   reviewStudyCard,
   updateStudySet,
@@ -2383,12 +2384,16 @@ export function setupIpcHandlers() {
       return notebook;
     },
     'knowledge:notebooks:updateSource': async (_event, args) => {
-      const notebook = await updateNotebookSource(args.path, args.sourcePath, { title: args.title });
+      const notebook = await updateNotebookSource(args.path, args.sourcePath, {
+        ...(args.title !== undefined ? { title: args.title } : {}),
+        ...(args.starred !== undefined ? { starred: args.starred } : {}),
+      });
       invalidateKnowledgeIndex();
       return notebook;
     },
     'knowledge:notebooks:removeSource': async (_event, args) => {
       const notebook = await removeNotebookSource(args.path, args.sourcePath);
+      await removeSourceFromStudySets(args.path, args.sourcePath);
       invalidateKnowledgeIndex();
       return notebook;
     },

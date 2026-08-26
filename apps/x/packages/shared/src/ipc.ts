@@ -93,6 +93,7 @@ const NotebookRetrievalProfileSchema = z.enum(['fast', 'balanced', 'precise']);
 const NotebookSourceDescriptorSchema = z.object({
   path: RelPath,
   title: z.string(),
+  starred: z.boolean(),
   enabled: z.boolean(),
   contextMode: z.enum(['off', 'overview', 'full']),
   addedAt: z.string(),
@@ -108,6 +109,7 @@ const NotebookDescriptorSchema = z.object({
   path: RelPath,
   version: z.literal(1),
   title: z.string(),
+  starred: z.boolean(),
   description: z.string(),
   retrievalProfile: NotebookRetrievalProfileSchema,
   createdAt: z.string(),
@@ -158,7 +160,7 @@ const StudyActivityConfigSchema = z.object({
   includeExplanations: z.boolean(),
 });
 const StudySetSchema = z.object({
-  id: z.string(), title: z.string(), description: z.string(), sourcePaths: z.array(RelPath),
+  id: z.string(), title: z.string(), starred: z.boolean(), description: z.string(), sourcePaths: z.array(RelPath),
   activityConfig: StudyActivityConfigSchema, createdAt: z.string(), updatedAt: z.string(),
 });
 const StudyCardProgressSchema = z.object({
@@ -2257,6 +2259,7 @@ const ipcSchemas = {
     req: z.object({
       path: RelPath,
       title: z.string().min(1).max(120).optional(),
+      starred: z.boolean().optional(),
       description: z.string().max(2_000).optional(),
       retrievalProfile: NotebookRetrievalProfileSchema.optional(),
     }),
@@ -2286,7 +2289,8 @@ const ipcSchemas = {
     req: z.object({
       path: RelPath,
       sourcePath: RelPath,
-      title: z.string().min(1).max(160),
+      title: z.string().min(1).max(160).optional(),
+      starred: z.boolean().optional(),
     }),
     res: NotebookDescriptorSchema,
   },
@@ -2310,11 +2314,11 @@ const ipcSchemas = {
     res: z.array(StudySetSchema),
   },
   'knowledge:study:createSet': {
-    req: z.object({ path: RelPath, title: z.string().min(1).max(160), description: z.string().max(2000).optional(), sourcePaths: z.array(RelPath).optional(), activityConfig: StudyActivityConfigSchema.partial().optional() }),
+    req: z.object({ path: RelPath, title: z.string().min(1).max(160), starred: z.boolean().optional(), description: z.string().max(2000).optional(), sourcePaths: z.array(RelPath).optional(), activityConfig: StudyActivityConfigSchema.partial().optional() }),
     res: StudySetSchema,
   },
   'knowledge:study:updateSet': {
-    req: z.object({ path: RelPath, studySetId: z.string().min(1), title: z.string().min(1).max(160).optional(), description: z.string().max(2000).optional(), sourcePaths: z.array(RelPath).optional(), activityConfig: StudyActivityConfigSchema.partial().optional() }),
+    req: z.object({ path: RelPath, studySetId: z.string().min(1), title: z.string().min(1).max(160).optional(), starred: z.boolean().optional(), description: z.string().max(2000).optional(), sourcePaths: z.array(RelPath).optional(), activityConfig: StudyActivityConfigSchema.partial().optional() }),
     res: StudySetSchema,
   },
   'knowledge:study:deleteSet': {

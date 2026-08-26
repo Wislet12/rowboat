@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { NotebookContextSnapshot } from './notebooks.js';
-import { applyStudyRating, buildStudyCards, buildStudyQuiz } from './study.js';
+import { applyStudyRating, buildStudyCards, buildStudyQuiz, StudySetSchema } from './study.js';
 
 function context(content: string): NotebookContextSnapshot {
     return {
@@ -32,6 +32,19 @@ function context(content: string): NotebookContextSnapshot {
 }
 
 describe('Study workspace learning engine', () => {
+    it('keeps starring durable while legacy study sets safely default to unstarred', () => {
+        const base = {
+            id: 'default',
+            title: 'Cardiac review',
+            description: '',
+            sourcePaths: [],
+            createdAt: '2026-08-26T12:00:00.000Z',
+            updatedAt: '2026-08-26T12:00:00.000Z',
+        };
+        expect(StudySetSchema.parse(base).starred).toBe(false);
+        expect(StudySetSchema.parse({ ...base, starred: true }).starred).toBe(true);
+    });
+
     it('builds source-grounded cards with stable citations and no cross-source content', () => {
         const cards = buildStudyCards(context([
             '# Atrial fibrillation',

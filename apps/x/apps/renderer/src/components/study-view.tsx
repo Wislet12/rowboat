@@ -21,6 +21,7 @@ import {
   RotateCcw,
   Search,
   Sparkles,
+  Star,
   Target,
   Trash2,
   Upload,
@@ -61,6 +62,7 @@ type NotebookDescriptor = {
   path: string
   version: 1
   title: string
+  starred: boolean
   description: string
   retrievalProfile: 'fast' | 'balanced' | 'precise'
   createdAt: string
@@ -68,6 +70,7 @@ type NotebookDescriptor = {
   sources: Array<{
     path: string
     title: string
+    starred: boolean
     enabled: boolean
     contextMode: 'off' | 'overview' | 'full'
     addedAt: string
@@ -90,6 +93,7 @@ type StudyCardProgress = {
 type StudySet = {
   id: string
   title: string
+  starred: boolean
   description: string
   sourcePaths: string[]
   activityConfig: {
@@ -155,9 +159,12 @@ type StudyWorkspace = {
 
 type StudyActions = {
   createNotebook: (title: string) => Promise<string>
+  getNotebook: (path: string) => Promise<NotebookDescriptor>
   importNotes: (path?: string) => Promise<string[]>
-  updateNotebook: (path: string, input: { title: string; description: string; retrievalProfile: 'fast' | 'balanced' | 'precise' }) => Promise<NotebookDescriptor>
+  updateNotebook: (path: string, input: { title?: string; starred?: boolean; description?: string; retrievalProfile?: 'fast' | 'balanced' | 'precise' }) => Promise<NotebookDescriptor>
   deleteNotebook: (path: string) => Promise<void>
+  updateNotebookSource: (path: string, sourcePath: string, input: { title?: string; starred?: boolean }) => Promise<NotebookDescriptor>
+  removeNotebookSource: (path: string, sourcePath: string) => Promise<NotebookDescriptor>
   startStudyChat: (prompt: string) => void
   startStudyVoice: () => void
 }
@@ -241,10 +248,32 @@ export function StudyView({
   const [newTitle, setNewTitle] = useState('')
   const [creating, setCreating] = useState(false)
   const [selectedStudySetId, setSelectedStudySetId] = useState<string | null>(null)
+  const [notebookByPath, setNotebookByPath] = useState<Record<string, NotebookDescriptor>>({})
+  const [editingNotebook, setEditingNotebook] = useState<NotebookDescriptor | null>(null)
+  const [deletingNotebook, setDeletingNotebook] = useState<NotebookDescriptor | null>(null)
   const notebooksRoot = useMemo(() => findNode(tree, NOTEBOOKS_ROOT), [tree])
   const notebooks = useMemo(() => [...(notebooksRoot?.children ?? [])]
     .filter((node) => node.kind === 'dir')
-    .sort((left, right) => latestMtime(right) - latestMtime(left)), [notebooksRoot])
+    .sort((left, right) => {
+      const starDelta = Number(notebookByPath[right.path]?.starred ?? false) - Number(notebookByPath[left.path]?.starred ?? false)
+      return starDelta || latestMtime(right) - latestMtime(left)
+    }), [notebookByPath, notebooksRoot])
+
+  useEffect(() => {
+    let active = true
+    void Promise.all(notebooks.map(async (node) => {
+      try { return await actions.getNotebook(node.path) }
+      catch { return null }
+    })).then((items) => {
+      if (!active) return
+      setNotebookByPath(Object.fromEntries(items.filter((item): item is NotebookDescriptor => Boolean(item)).map((item) => [item.path, item])))
+    })
+    return () => { active = false }
+  }, [actions, notebooksRoot])
+
+  const rememberNotebook = useCallback((notebook: NotebookDescriptor) => {
+    setNotebookByPath((current) => ({ ...current, [notebook.path]: notebook }))
+  }, [])
 
   const createNotebook = useCallback(async () => {
     const title = newTitle.trim()
@@ -339,25 +368,30 @@ export function StudyView({
                   <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                     {notebooks.map((node) => {
                       const notes = collectNotebookSources(node)
+                      const notebook = notebookByPath[node.path]
                       return (
-                        <button
-                          key={node.path}
-                          type="button"
-                          onClick={() => onOpenNotebook(node.path)}
-                          className="group min-h-36 rounded-2xl border border-border bg-background p-4 text-left transition hover:-translate-y-0.5 hover:border-violet-300 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"
-                        >
+                        <article key={node.path} className="group min-h-36 rounded-2xl border border-border bg-background p-4 transition hover:-translate-y-0.5 hover:border-violet-300 hover:shadow-sm">
                           <div className="flex items-start justify-between gap-3">
                             <span className="flex size-9 items-center justify-center rounded-xl bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300"><BookOpen className="size-4" /></span>
-                            <ChevronRight className="size-4 text-muted-foreground transition group-hover:translate-x-0.5" />
+                            <div className="flex items-center gap-1">
+                              <button type="button" disabled={!notebook} onClick={() => {
+                                if (!notebook) return
+                                void actions.updateNotebook(notebook.path, { starred: !notebook.starred }).then((updated) => {
+                                  rememberNotebook(updated)
+                                  toast(updated.starred ? 'Notebook starred' : 'Notebook unstarred', 'success')
+                                })
+                              }} aria-label={notebook?.starred ? `Unstar ${notebook.title}` : `Star ${notebook?.title ?? node.name}`} aria-pressed={notebook?.starred ?? false} className={cn('flex size-8 items-center justify-center rounded-lg hover:bg-accent disabled:opacity-30', notebook?.starred ? 'text-amber-600' : 'text-muted-foreground')}><Star className={cn('size-4', notebook?.starred && 'fill-current')} /></button>
+                              <button type="button" disabled={!notebook} onClick={() => notebook && setEditingNotebook(notebook)} aria-label={`Edit ${notebook?.title ?? node.name}`} className="flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30"><Pencil className="size-4" /></button>
+                              <button type="button" disabled={!notebook} onClick={() => notebook && setDeletingNotebook(notebook)} aria-label={`Delete ${notebook?.title ?? node.name}`} className="flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-30"><Trash2 className="size-4" /></button>
+                            </div>
                           </div>
-                          <h3 className="mt-4 truncate font-semibold">{node.name}</h3>
-                          <div className="mt-1 flex items-center justify-between gap-3 text-xs text-muted-foreground">
-                            <span>{notes.length} {notes.length === 1 ? 'source' : 'sources'}</span>
-                            <span>{relativeDate(latestMtime(node))}</span>
-                          </div>
-                          <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full w-0 rounded-full bg-violet-500" /></div>
-                          <span className="mt-1 block text-[11px] text-muted-foreground">Open to begin or continue</span>
-                        </button>
+                          <button type="button" onClick={() => onOpenNotebook(node.path)} className="mt-3 block w-full rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500">
+                            <div className="flex items-center gap-2"><h3 className="min-w-0 flex-1 truncate font-semibold">{notebook?.title ?? node.name}</h3><ChevronRight className="size-4 text-muted-foreground transition group-hover:translate-x-0.5" /></div>
+                            <div className="mt-1 flex items-center justify-between gap-3 text-xs text-muted-foreground"><span>{notes.length} {notes.length === 1 ? 'source' : 'sources'}</span><span>{relativeDate(notebook?.updatedAt ?? latestMtime(node))}</span></div>
+                            <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full w-0 rounded-full bg-violet-500" /></div>
+                            <span className="mt-1 block text-[11px] text-muted-foreground">Open to begin or continue</span>
+                          </button>
+                        </article>
                       )
                     })}
                   </div>
@@ -395,11 +429,40 @@ export function StudyView({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      {editingNotebook && <NotebookEditDialog open notebook={editingNotebook} onOpenChange={(open) => { if (!open) setEditingNotebook(null) }} onSave={async (input) => {
+        const updated = await actions.updateNotebook(editingNotebook.path, input)
+        rememberNotebook(updated)
+        setEditingNotebook(null)
+      }} />}
+      <AlertDialog open={Boolean(deletingNotebook)} onOpenChange={(open) => { if (!open) setDeletingNotebook(null) }}>
+        <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete “{deletingNotebook?.title}”?</AlertDialogTitle><AlertDialogDescription>The notebook, its uploaded sources, and saved artifacts move to Rowboat’s recoverable trash. Active chat and voice context closes immediately.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction className="bg-destructive text-destructive-foreground" onClick={() => { if (!deletingNotebook) return; void actions.deleteNotebook(deletingNotebook.path).then(() => { setDeletingNotebook(null); toast('Notebook moved to recoverable trash', 'success') }) }}>Delete notebook</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
 
-function NotebookStudyHome({ tree, notebookPath, actions, onBack, onOpenStudySet, onOpenNotebookStudio, onOpenNote }: {
+function NotebookEditDialog({ open, notebook, onOpenChange, onSave }: {
+  open: boolean
+  notebook: NotebookDescriptor
+  onOpenChange: (open: boolean) => void
+  onSave: (input: { title: string; description: string; retrievalProfile: NotebookDescriptor['retrievalProfile'] }) => Promise<void>
+}) {
+  const [title, setTitle] = useState(notebook.title)
+  const [description, setDescription] = useState(notebook.description)
+  const [retrievalProfile, setRetrievalProfile] = useState(notebook.retrievalProfile)
+  const [saving, setSaving] = useState(false)
+  useEffect(() => { if (open) { setTitle(notebook.title); setDescription(notebook.description); setRetrievalProfile(notebook.retrievalProfile) } }, [notebook, open])
+  const save = async () => {
+    if (!title.trim() || saving) return
+    setSaving(true)
+    try { await onSave({ title: title.trim(), description: description.trim(), retrievalProfile }); toast('Notebook saved', 'success') }
+    catch (error) { toast(error instanceof Error ? error.message : 'Could not save notebook', 'error') }
+    finally { setSaving(false) }
+  }
+  return <Dialog open={open} onOpenChange={(next) => { if (!saving) onOpenChange(next) }}><DialogContent><DialogHeader><DialogTitle>Edit notebook</DialogTitle><DialogDescription>Rename this notebook, update its purpose, or tune retrieval. Uploaded sources and study sets remain linked.</DialogDescription></DialogHeader><div className="space-y-4"><label className="block text-sm font-medium">Name<Input className="mt-1.5" value={title} onChange={(event) => setTitle(event.target.value)} /></label><label className="block text-sm font-medium">Description<textarea className="mt-1.5 min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={description} onChange={(event) => setDescription(event.target.value)} /></label><label className="block text-sm font-medium">Retrieval<select className="mt-1.5 h-10 w-full rounded-md border border-input bg-background px-3 text-sm" value={retrievalProfile} onChange={(event) => setRetrievalProfile(event.target.value as NotebookDescriptor['retrievalProfile'])}><option value="fast">Fast</option><option value="balanced">Balanced</option><option value="precise">Precise</option></select></label></div><DialogFooter><button type="button" onClick={() => onOpenChange(false)} disabled={saving} className="h-9 rounded-lg border px-4 text-sm">Cancel</button><button type="button" onClick={() => { void save() }} disabled={!title.trim() || saving} className="inline-flex h-9 items-center gap-2 rounded-lg bg-violet-600 px-4 text-sm font-semibold text-white disabled:opacity-50">{saving ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />} Save notebook</button></DialogFooter></DialogContent></Dialog>
+}
+
+function NotebookStudyHome({ notebookPath, actions, onBack, onOpenStudySet, onOpenNotebookStudio, onOpenNote }: {
   tree: TreeNode[]
   notebookPath: string
   actions: StudyActions
@@ -408,8 +471,7 @@ function NotebookStudyHome({ tree, notebookPath, actions, onBack, onOpenStudySet
   onOpenNotebookStudio: () => void
   onOpenNote: (path: string) => void
 }) {
-  const node = useMemo(() => findNode(tree, notebookPath), [notebookPath, tree])
-  const sources = useMemo(() => node ? collectNotebookSources(node) : [], [node])
+  const [notebook, setNotebook] = useState<NotebookDescriptor | null>(null)
   const [sets, setSets] = useState<StudySet[]>([])
   const [loading, setLoading] = useState(true)
   const [createOpen, setCreateOpen] = useState(false)
@@ -419,15 +481,28 @@ function NotebookStudyHome({ tree, notebookPath, actions, onBack, onOpenStudySet
   const [flashcardCount, setFlashcardCount] = useState(20)
   const [quizQuestionCount, setQuizQuestionCount] = useState(10)
   const [difficulty, setDifficulty] = useState<StudySet['activityConfig']['difficulty']>('adaptive')
+  const [notebookEditOpen, setNotebookEditOpen] = useState(false)
+  const [notebookDeleteOpen, setNotebookDeleteOpen] = useState(false)
+  const [editingSet, setEditingSet] = useState<StudySet | null>(null)
+  const [deletingSet, setDeletingSet] = useState<StudySet | null>(null)
+  const [editingSourcePath, setEditingSourcePath] = useState<string | null>(null)
+  const [deletingSourcePath, setDeletingSourcePath] = useState<string | null>(null)
 
-  const loadSets = useCallback(async () => {
+  const load = useCallback(async () => {
     setLoading(true)
-    try { setSets(await window.ipc.invoke('knowledge:study:listSets', { path: notebookPath })) }
-    catch (error) { toast(error instanceof Error ? error.message : 'Could not load study sets', 'error') }
+    try {
+      const [nextNotebook, nextSets] = await Promise.all([
+        actions.getNotebook(notebookPath),
+        window.ipc.invoke('knowledge:study:listSets', { path: notebookPath }),
+      ])
+      setNotebook(nextNotebook)
+      setSets([...nextSets].sort((left, right) => Number(right.starred) - Number(left.starred) || new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime()))
+    } catch (error) { toast(error instanceof Error ? error.message : 'Could not load notebook', 'error') }
     finally { setLoading(false) }
-  }, [notebookPath])
-  useEffect(() => { void loadSets() }, [loadSets])
+  }, [actions, notebookPath])
+  useEffect(() => { void load() }, [load])
 
+  const sources = notebook?.sources ?? []
   const openCreate = () => { setSelectedPaths(sources.map((source) => source.path)); setCreateOpen(true) }
   const createSet = async () => {
     if (!title.trim()) return
@@ -436,27 +511,53 @@ function NotebookStudyHome({ tree, notebookPath, actions, onBack, onOpenStudySet
         path: notebookPath, title: title.trim(), description: description.trim(), sourcePaths: selectedPaths,
         activityConfig: { flashcardCount, quizQuestionCount, difficulty },
       })
-      setCreateOpen(false); setTitle(''); setDescription(''); await loadSets(); onOpenStudySet(created.id)
+      setCreateOpen(false); setTitle(''); setDescription(''); await load(); onOpenStudySet(created.id)
       toast('Study set created', 'success')
     } catch (error) { toast(error instanceof Error ? error.message : 'Could not create study set', 'error') }
   }
 
+  if (loading && !notebook) return <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground"><Loader2 className="mr-2 size-4 animate-spin" /> Loading notebook…</div>
+  if (!notebook) return <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8"><CircleHelp className="size-8 text-destructive" /><p className="text-sm text-muted-foreground">This notebook is unavailable.</p><button type="button" onClick={onBack} className="rounded-lg border px-3 py-2 text-sm">Back to notebooks</button></div>
+  const editingSource = notebook.sources.find((source) => source.path === editingSourcePath) ?? null
+  const deletingSource = notebook.sources.find((source) => source.path === deletingSourcePath) ?? null
+
   return <>
     <header className="shrink-0 border-b border-border/70 bg-background/90 px-4 py-4 sm:px-7">
       <div className="mx-auto flex w-full max-w-[1180px] flex-wrap items-start justify-between gap-3">
-        <div className="flex gap-3"><button type="button" onClick={onBack} aria-label="Back to notebooks" className="flex size-9 items-center justify-center rounded-lg border border-border"><ArrowLeft className="size-4" /></button><div><div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-violet-600">Notebook</div><h1 className="text-xl font-semibold">{node?.name ?? 'Notebook'}</h1><p className="text-xs text-muted-foreground">{sources.length} sources · stored in Brain</p></div></div>
-        <div className="flex flex-wrap gap-2"><button type="button" onClick={() => void actions.importNotes(notebookPath)} className="inline-flex h-9 items-center gap-2 rounded-lg border px-3 text-sm"><Upload className="size-4" /> Add materials</button><button type="button" onClick={onOpenNotebookStudio} className="inline-flex h-9 items-center gap-2 rounded-lg border px-3 text-sm"><LibraryBig className="size-4" /> Notebook studio</button><button type="button" onClick={openCreate} className="inline-flex h-9 items-center gap-2 rounded-lg bg-violet-600 px-3 text-sm font-semibold text-white"><Plus className="size-4" /> New study set</button></div>
+        <div className="flex gap-3"><button type="button" onClick={onBack} aria-label="Back to notebooks" className="flex size-9 items-center justify-center rounded-lg border border-border"><ArrowLeft className="size-4" /></button><div><div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-violet-600">Notebook</div><h1 className="text-xl font-semibold">{notebook.title}</h1><p className="text-xs text-muted-foreground">{sources.length} sources · stored in Brain</p></div></div>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" onClick={() => { void actions.importNotes(notebookPath).then(load) }} className="inline-flex h-9 items-center gap-2 rounded-lg border px-3 text-sm"><Upload className="size-4" /> Add materials</button>
+          <button type="button" onClick={onOpenNotebookStudio} className="inline-flex h-9 items-center gap-2 rounded-lg border px-3 text-sm"><LibraryBig className="size-4" /> Notebook studio</button>
+          <button type="button" onClick={() => { void actions.updateNotebook(notebook.path, { starred: !notebook.starred }).then((updated) => { setNotebook(updated); toast(updated.starred ? 'Notebook starred' : 'Notebook unstarred', 'success') }) }} aria-label={notebook.starred ? 'Unstar notebook' : 'Star notebook'} aria-pressed={notebook.starred} className={cn('flex size-9 items-center justify-center rounded-lg border', notebook.starred ? 'border-amber-400/40 bg-amber-400/10 text-amber-600' : 'text-muted-foreground hover:bg-accent')}><Star className={cn('size-4', notebook.starred && 'fill-current')} /></button>
+          <button type="button" onClick={() => setNotebookEditOpen(true)} aria-label="Edit and save notebook" className="flex size-9 items-center justify-center rounded-lg border text-muted-foreground hover:bg-accent hover:text-foreground"><Pencil className="size-4" /></button>
+          <button type="button" onClick={() => setNotebookDeleteOpen(true)} aria-label="Delete notebook" className="flex size-9 items-center justify-center rounded-lg border text-destructive hover:bg-destructive/10"><Trash2 className="size-4" /></button>
+          <button type="button" onClick={openCreate} className="inline-flex h-9 items-center gap-2 rounded-lg bg-violet-600 px-3 text-sm font-semibold text-white"><Plus className="size-4" /> New study set</button>
+        </div>
       </div>
     </header>
     <main className="flex-1 overflow-y-auto px-4 py-5 sm:px-7"><div className="mx-auto w-full max-w-[1180px] space-y-6">
-      <section className="rounded-2xl border border-violet-200 bg-gradient-to-br from-violet-50 to-background p-5 dark:border-violet-500/20 dark:from-violet-950/35"><div className="flex items-center gap-2 text-sm font-semibold text-violet-700"><BrainCircuit className="size-4" /> Notebook intelligence</div><h2 className="mt-2 text-lg font-semibold">Chat, speak, and create from all or selected sources.</h2><p className="mt-1 text-sm text-muted-foreground">Notebook summaries, guides, FAQs, timelines, comparisons, cited chat, and realtime voice remain available in Notebook Studio.</p><div className="mt-4 flex gap-2"><button type="button" onClick={() => actions.startStudyChat(`Use only the active notebook “${node?.name ?? 'Notebook'}” and cite sources as [S#].`)} className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white">Chat with notebook</button><button type="button" onClick={actions.startStudyVoice} className="rounded-lg border px-4 py-2 text-sm font-semibold">Voice with notebook</button></div></section>
+      <section className="rounded-2xl border border-violet-200 bg-gradient-to-br from-violet-50 to-background p-5 dark:border-violet-500/20 dark:from-violet-950/35"><div className="flex items-center gap-2 text-sm font-semibold text-violet-700"><BrainCircuit className="size-4" /> Notebook intelligence</div><h2 className="mt-2 text-lg font-semibold">Chat, speak, and create from all or selected sources.</h2><p className="mt-1 text-sm text-muted-foreground">Notebook summaries, guides, FAQs, timelines, comparisons, cited chat, and realtime voice remain available in Notebook Studio.</p><div className="mt-4 flex gap-2"><button type="button" onClick={() => actions.startStudyChat(`Use only the active notebook “${notebook.title}” and cite sources as [S#].`)} className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white">Chat with notebook</button><button type="button" onClick={actions.startStudyVoice} className="rounded-lg border px-4 py-2 text-sm font-semibold">Voice with notebook</button></div></section>
       <section><div className="mb-3 flex items-end justify-between"><div><h2 className="text-lg font-semibold">Study sets</h2><p className="text-sm text-muted-foreground">Focused activities and progress built from selected notebook sources.</p></div><span className="text-xs text-muted-foreground">{sets.length} sets</span></div>
-        {loading ? <Loader2 className="size-5 animate-spin" /> : sets.length === 0 ? <div className="rounded-2xl border border-dashed p-8 text-center"><p className="text-sm text-muted-foreground">Create a focused study set without duplicating your notes.</p><button type="button" onClick={openCreate} className="mt-3 rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white">New study set</button></div> : <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{sets.map((set) => <button key={set.id} type="button" onClick={() => onOpenStudySet(set.id)} className="rounded-2xl border bg-background p-4 text-left hover:border-violet-300"><div className="flex justify-between"><Target className="size-5 text-violet-600" /><ChevronRight className="size-4 text-muted-foreground" /></div><h3 className="mt-3 font-semibold">{set.title}</h3><p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{set.description || `${set.sourcePaths.length} selected sources`}</p><div className="mt-3 text-[11px] text-muted-foreground">{set.sourcePaths.length} sources · {set.activityConfig.flashcardCount} cards · {set.activityConfig.quizQuestionCount} quiz questions</div></button>)}</div>}
+        {loading ? <Loader2 className="size-5 animate-spin" /> : sets.length === 0 ? <div className="rounded-2xl border border-dashed p-8 text-center"><p className="text-sm text-muted-foreground">Create a focused study set without duplicating your notes.</p><button type="button" onClick={openCreate} className="mt-3 rounded-lg bg-violet-600 px-4 py-2 text-sm font-semibold text-white">New study set</button></div> : <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{sets.map((set) => <article key={set.id} className="rounded-2xl border bg-background p-4 hover:border-violet-300"><div className="flex items-start justify-between"><Target className="size-5 text-violet-600" /><div className="flex gap-1"><button type="button" onClick={() => { void window.ipc.invoke('knowledge:study:updateSet', { path: notebookPath, studySetId: set.id, starred: !set.starred }).then(load) }} aria-label={set.starred ? `Unstar ${set.title}` : `Star ${set.title}`} aria-pressed={set.starred} className={cn('flex size-7 items-center justify-center rounded-md hover:bg-accent', set.starred ? 'text-amber-600' : 'text-muted-foreground')}><Star className={cn('size-3.5', set.starred && 'fill-current')} /></button><button type="button" onClick={() => setEditingSet(set)} aria-label={`Edit ${set.title}`} className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"><Pencil className="size-3.5" /></button><button type="button" onClick={() => setDeletingSet(set)} aria-label={`Delete ${set.title}`} className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive"><Trash2 className="size-3.5" /></button></div></div><button type="button" onClick={() => onOpenStudySet(set.id)} className="mt-2 block w-full rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"><div className="flex items-center gap-2"><h3 className="min-w-0 flex-1 truncate font-semibold">{set.title}</h3><ChevronRight className="size-4 text-muted-foreground" /></div><p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{set.description || `${set.sourcePaths.length} selected sources`}</p><div className="mt-3 text-[11px] text-muted-foreground">{set.sourcePaths.length} sources · {set.activityConfig.flashcardCount} cards · {set.activityConfig.quizQuestionCount} quiz questions</div></button></article>)}</div>}
       </section>
-      {sources.length > 0 && <section><h2 className="mb-3 text-lg font-semibold">Notebook sources</h2><div className="overflow-hidden rounded-2xl border bg-background">{sources.map((source, index) => <button key={source.path} type="button" onClick={() => onOpenNote(source.path)} className={cn('flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-accent', index > 0 && 'border-t')}><FileText className="size-4" /><span className="flex-1 truncate text-sm">{source.name.replace(/\.md$/i, '')}</span></button>)}</div></section>}
+      {sources.length > 0 && <section><h2 className="mb-3 text-lg font-semibold">Notebook sources</h2><div className="overflow-hidden rounded-2xl border bg-background">{sources.map((source, index) => <div key={source.path} className={cn('group flex w-full items-center gap-2 px-4 py-3', index > 0 && 'border-t')}><FileText className="size-4 shrink-0" /><button type="button" onClick={() => onOpenNote(source.path)} className="min-w-0 flex-1 truncate text-left text-sm hover:underline">{source.title}</button><button type="button" onClick={() => { void actions.updateNotebookSource(notebook.path, source.path, { starred: !source.starred }).then(setNotebook) }} aria-label={source.starred ? `Unstar ${source.title}` : `Star ${source.title}`} aria-pressed={source.starred} className={cn('flex size-7 items-center justify-center rounded-md hover:bg-accent', source.starred ? 'text-amber-600' : 'text-muted-foreground')}><Star className={cn('size-3.5', source.starred && 'fill-current')} /></button><button type="button" onClick={() => setEditingSourcePath(source.path)} aria-label={`Edit ${source.title}`} className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"><Pencil className="size-3.5" /></button><button type="button" onClick={() => setDeletingSourcePath(source.path)} aria-label={`Delete ${source.title}`} className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive"><Trash2 className="size-3.5" /></button></div>)}</div></section>}
     </div></main>
-    <Dialog open={createOpen} onOpenChange={setCreateOpen}><DialogContent className="max-h-[85vh] overflow-y-auto"><DialogHeader><DialogTitle>Create study set</DialogTitle><DialogDescription>Select notebook sources and customize the learning activities. Sources remain stored once in Brain.</DialogDescription></DialogHeader><div className="space-y-4"><Input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Example: Midterm review" /><Input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Goal or description (optional)" /><div><div className="mb-2 text-sm font-medium">Sources</div><div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border p-2">{sources.map((source) => <label key={source.path} className="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-accent"><input type="checkbox" checked={selectedPaths.includes(source.path)} onChange={() => setSelectedPaths((current) => current.includes(source.path) ? current.filter((path) => path !== source.path) : [...current, source.path])} /> {source.name.replace(/\.md$/i, '')}</label>)}</div></div><div className="grid grid-cols-2 gap-3"><label className="text-sm">Flashcards<Input type="number" min={5} max={80} value={flashcardCount} onChange={(event) => setFlashcardCount(Number(event.target.value))} /></label><label className="text-sm">Quiz questions<Input type="number" min={5} max={50} value={quizQuestionCount} onChange={(event) => setQuizQuestionCount(Number(event.target.value))} /></label></div><label className="block text-sm">Difficulty<select value={difficulty} onChange={(event) => setDifficulty(event.target.value as typeof difficulty)} className="mt-1 h-9 w-full rounded-md border bg-background px-3"><option value="adaptive">Adaptive</option><option value="introductory">Introductory</option><option value="intermediate">Intermediate</option><option value="advanced">Advanced</option></select></label></div><DialogFooter><button type="button" onClick={() => setCreateOpen(false)} className="h-9 rounded-lg border px-4 text-sm">Cancel</button><button type="button" disabled={!title.trim()} onClick={() => void createSet()} className="h-9 rounded-lg bg-violet-600 px-4 text-sm font-semibold text-white disabled:opacity-50">Create study set</button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={createOpen} onOpenChange={setCreateOpen}><DialogContent className="max-h-[85vh] overflow-y-auto"><DialogHeader><DialogTitle>Create study set</DialogTitle><DialogDescription>Select notebook sources and customize the learning activities. Sources remain stored once in Brain.</DialogDescription></DialogHeader><div className="space-y-4"><Input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Example: Midterm review" /><Input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Goal or description (optional)" /><div><div className="mb-2 text-sm font-medium">Sources</div><div className="max-h-40 space-y-1 overflow-y-auto rounded-lg border p-2">{sources.map((source) => <label key={source.path} className="flex items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-accent"><input type="checkbox" checked={selectedPaths.includes(source.path)} onChange={() => setSelectedPaths((current) => current.includes(source.path) ? current.filter((path) => path !== source.path) : [...current, source.path])} /> {source.title}</label>)}</div></div><div className="grid grid-cols-2 gap-3"><label className="text-sm">Flashcards<Input type="number" min={5} max={80} value={flashcardCount} onChange={(event) => setFlashcardCount(Number(event.target.value))} /></label><label className="text-sm">Quiz questions<Input type="number" min={5} max={50} value={quizQuestionCount} onChange={(event) => setQuizQuestionCount(Number(event.target.value))} /></label></div><label className="block text-sm">Difficulty<select value={difficulty} onChange={(event) => setDifficulty(event.target.value as typeof difficulty)} className="mt-1 h-9 w-full rounded-md border bg-background px-3"><option value="adaptive">Adaptive</option><option value="introductory">Introductory</option><option value="intermediate">Intermediate</option><option value="advanced">Advanced</option></select></label></div><DialogFooter><button type="button" onClick={() => setCreateOpen(false)} className="h-9 rounded-lg border px-4 text-sm">Cancel</button><button type="button" disabled={!title.trim()} onClick={() => void createSet()} className="h-9 rounded-lg bg-violet-600 px-4 text-sm font-semibold text-white disabled:opacity-50">Create study set</button></DialogFooter></DialogContent></Dialog>
+    {notebookEditOpen && <NotebookEditDialog open notebook={notebook} onOpenChange={setNotebookEditOpen} onSave={async (input) => { setNotebook(await actions.updateNotebook(notebook.path, input)); setNotebookEditOpen(false) }} />}
+    <AlertDialog open={notebookDeleteOpen} onOpenChange={setNotebookDeleteOpen}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete “{notebook.title}”?</AlertDialogTitle><AlertDialogDescription>The notebook and all uploaded sources move to recoverable trash. Use this only when you mean to remove the knowledge everywhere.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction className="bg-destructive text-destructive-foreground" onClick={() => { void actions.deleteNotebook(notebook.path).then(onBack) }}>Delete notebook everywhere</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+    {editingSet && <EditStudySetDialog open studySet={editingSet} notebook={notebook} onOpenChange={(open) => { if (!open) setEditingSet(null) }} onSave={async (input) => { await window.ipc.invoke('knowledge:study:updateSet', { path: notebookPath, studySetId: editingSet.id, ...input }); setEditingSet(null); await load() }} />}
+    <AlertDialog open={Boolean(deletingSet)} onOpenChange={(open) => { if (!open) setDeletingSet(null) }}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete “{deletingSet?.title}”?</AlertDialogTitle><AlertDialogDescription>This removes only the study set and its progress. Its notebook sources remain safely stored in Brain, and a recovery snapshot is preserved.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction className="bg-destructive text-destructive-foreground" onClick={() => { if (!deletingSet) return; void window.ipc.invoke('knowledge:study:deleteSet', { path: notebookPath, studySetId: deletingSet.id }).then(async () => { setDeletingSet(null); await load() }) }}>Delete study set only</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+    {editingSource && <SourceEditDialog open source={editingSource} onOpenChange={(open) => { if (!open) setEditingSourcePath(null) }} onSave={async (titleInput) => { setNotebook(await actions.updateNotebookSource(notebook.path, editingSource.path, { title: titleInput })); setEditingSourcePath(null) }} />}
+    <AlertDialog open={Boolean(deletingSource)} onOpenChange={(open) => { if (!open) setDeletingSourcePath(null) }}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete “{deletingSource?.title}” everywhere?</AlertDialogTitle><AlertDialogDescription>This removes the uploaded source from this notebook, Brain, and every linked study set. The source file moves to Rowboat’s recoverable trash.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction className="bg-destructive text-destructive-foreground" onClick={() => { if (!deletingSource) return; void actions.removeNotebookSource(notebook.path, deletingSource.path).then((updated) => { setNotebook(updated); setDeletingSourcePath(null); void load() }) }}>Delete source everywhere</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
   </>
+}
+
+function SourceEditDialog({ open, source, onOpenChange, onSave }: { open: boolean; source: NotebookDescriptor['sources'][number]; onOpenChange: (open: boolean) => void; onSave: (title: string) => Promise<void> }) {
+  const [title, setTitle] = useState(source.title)
+  const [saving, setSaving] = useState(false)
+  useEffect(() => { if (open) setTitle(source.title) }, [open, source])
+  const save = async () => { if (!title.trim() || saving) return; setSaving(true); try { await onSave(title.trim()); toast('Source saved', 'success') } catch (error) { toast(error instanceof Error ? error.message : 'Could not save source', 'error') } finally { setSaving(false) } }
+  return <Dialog open={open} onOpenChange={(next) => { if (!saving) onOpenChange(next) }}><DialogContent><DialogHeader><DialogTitle>Edit uploaded source</DialogTitle><DialogDescription>Change the display name without altering the original extracted content or citations.</DialogDescription></DialogHeader><Input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} /><DialogFooter><button type="button" onClick={() => onOpenChange(false)} className="h-9 rounded-lg border px-4 text-sm">Cancel</button><button type="button" disabled={!title.trim() || saving} onClick={() => { void save() }} className="inline-flex h-9 items-center gap-2 rounded-lg bg-violet-600 px-4 text-sm font-semibold text-white disabled:opacity-50">{saving ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />} Save source</button></DialogFooter></DialogContent></Dialog>
 }
 
 function StudySetWorkspace({
@@ -547,6 +648,7 @@ function StudySetWorkspace({
             <div className="flex flex-wrap gap-2">
               <button type="button" onClick={() => { void actions.importNotes(notebookPath).then(() => load()) }} className="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-background px-3 text-sm font-medium hover:bg-accent"><Upload className="size-4" /> Add materials</button>
               <button type="button" onClick={onOpenNotebookStudio} className="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-background px-3 text-sm font-medium hover:bg-accent"><LibraryBig className="size-4" /> Sources</button>
+              <button type="button" onClick={() => { void window.ipc.invoke('knowledge:study:updateSet', { path: notebookPath, studySetId, starred: !workspace.studySet.starred }).then((studySet) => { setWorkspace((current) => current ? { ...current, studySet } : current); toast(studySet.starred ? 'Study set starred' : 'Study set unstarred', 'success') }) }} aria-label={workspace.studySet.starred ? 'Unstar study set' : 'Star study set'} aria-pressed={workspace.studySet.starred} className={cn('flex size-9 items-center justify-center rounded-lg border bg-background', workspace.studySet.starred ? 'border-amber-400/40 bg-amber-400/10 text-amber-600' : 'text-muted-foreground hover:bg-accent')}><Star className={cn('size-4', workspace.studySet.starred && 'fill-current')} /></button>
               <button type="button" onClick={() => setSettingsOpen(true)} aria-label="Edit and save study set" className="flex size-9 items-center justify-center rounded-lg border border-border bg-background hover:bg-accent"><Pencil className="size-4" /></button>
               <button type="button" onClick={() => setDeleteOpen(true)} aria-label="Delete study set" className="flex size-9 items-center justify-center rounded-lg border border-border bg-background text-destructive hover:bg-destructive/10"><Trash2 className="size-4" /></button>
             </div>

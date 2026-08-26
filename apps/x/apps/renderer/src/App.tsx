@@ -6579,7 +6579,7 @@ function App() {
     },
     updateNotebook: async (
       path: string,
-      input: { title: string; description: string; retrievalProfile: 'fast' | 'balanced' | 'precise' },
+      input: { title?: string; starred?: boolean; description?: string; retrievalProfile?: 'fast' | 'balanced' | 'precise' },
     ) => {
       return window.ipc.invoke('knowledge:notebooks:update', { path, ...input })
     },
@@ -6603,8 +6603,8 @@ function App() {
     ) => {
       return window.ipc.invoke('knowledge:notebooks:setSourceContextMode', { path, sourcePath, contextMode })
     },
-    updateNotebookSource: async (path: string, sourcePath: string, title: string) => {
-      return window.ipc.invoke('knowledge:notebooks:updateSource', { path, sourcePath, title })
+    updateNotebookSource: async (path: string, sourcePath: string, input: { title?: string; starred?: boolean }) => {
+      return window.ipc.invoke('knowledge:notebooks:updateSource', { path, sourcePath, ...input })
     },
     removeNotebookSource: async (path: string, sourcePath: string) => {
       const notebook = await window.ipc.invoke('knowledge:notebooks:removeSource', { path, sourcePath })

@@ -15,6 +15,7 @@ import {
   Save,
   SearchIcon,
   Settings2,
+  Star,
   Table2,
   Trash2,
   Upload,
@@ -66,6 +67,7 @@ type NotebookDescriptor = {
   path: string
   version: 1
   title: string
+  starred: boolean
   description: string
   retrievalProfile: 'fast' | 'balanced' | 'precise'
   createdAt: string
@@ -73,6 +75,7 @@ type NotebookDescriptor = {
   sources: Array<{
     path: string
     title: string
+    starred: boolean
     enabled: boolean
     contextMode: 'off' | 'overview' | 'full'
     addedAt: string
@@ -92,11 +95,11 @@ export type KnowledgeViewActions = {
   importNotes: (parentPath?: string) => Promise<string[]>
   createNotebook: (title: string) => Promise<string>
   getNotebook: (path: string) => Promise<NotebookDescriptor>
-  updateNotebook: (path: string, input: { title: string; description: string; retrievalProfile: 'fast' | 'balanced' | 'precise' }) => Promise<NotebookDescriptor>
+  updateNotebook: (path: string, input: { title?: string; starred?: boolean; description?: string; retrievalProfile?: 'fast' | 'balanced' | 'precise' }) => Promise<NotebookDescriptor>
   deleteNotebook: (path: string) => Promise<void>
   setNotebookSourceEnabled: (path: string, sourcePath: string, enabled: boolean) => Promise<NotebookDescriptor>
   setNotebookSourceContextMode: (path: string, sourcePath: string, contextMode: 'off' | 'overview' | 'full') => Promise<NotebookDescriptor>
-  updateNotebookSource: (path: string, sourcePath: string, title: string) => Promise<NotebookDescriptor>
+  updateNotebookSource: (path: string, sourcePath: string, input: { title?: string; starred?: boolean }) => Promise<NotebookDescriptor>
   removeNotebookSource: (path: string, sourcePath: string) => Promise<NotebookDescriptor>
   askNotebook: (prompt: string) => void
   startStudyChat: (prompt: string) => void
@@ -619,6 +622,28 @@ function NotebookDetail({
               <button
                 type="button"
                 disabled={!notebook}
+                onClick={() => {
+                  if (!notebook) return
+                  void actions.updateNotebook(notebook.path, { starred: !notebook.starred }).then((updated) => {
+                    setNotebook(updated)
+                    toast(updated.starred ? 'Notebook starred' : 'Notebook unstarred', 'success')
+                  }).catch((error) => toast(error instanceof Error ? error.message : 'Could not update notebook star', 'error'))
+                }}
+                aria-label={notebook?.starred ? 'Unstar notebook' : 'Star notebook'}
+                aria-pressed={notebook?.starred ?? false}
+                className={cn(
+                  'inline-flex h-8 items-center gap-1.5 rounded-lg border px-3 text-xs font-semibold disabled:opacity-40',
+                  notebook?.starred
+                    ? 'border-amber-400/40 bg-amber-400/10 text-amber-700 dark:text-amber-300'
+                    : 'border-border bg-background text-foreground hover:bg-accent',
+                )}
+              >
+                <Star className={cn('size-3.5', notebook?.starred && 'fill-current')} />
+                {notebook?.starred ? 'Starred' : 'Star'}
+              </button>
+              <button
+                type="button"
+                disabled={!notebook}
                 onClick={() => setSettingsOpen(true)}
                 className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-xs font-semibold text-foreground hover:bg-accent disabled:opacity-40"
               >
@@ -698,6 +723,32 @@ function NotebookDetail({
                     key={source.path}
                     className="group flex items-center gap-3 rounded-xl border border-transparent px-2.5 py-2 transition-colors hover:border-border hover:bg-accent/35"
                   >
+                    <button
+                      type="button"
+                      disabled={busySource === source.path}
+                      onClick={() => {
+                        if (!notebook) return
+                        setBusySource(source.path)
+                        void actions.updateNotebookSource(notebook.path, source.path, { starred: !source.starred })
+                          .then((updated) => {
+                            setNotebook(updated)
+                            toast(source.starred ? 'Source unstarred' : 'Source starred', 'success')
+                          })
+                          .catch((error) => toast(error instanceof Error ? error.message : 'Could not update source star', 'error'))
+                          .finally(() => setBusySource(null))
+                      }}
+                      className={cn(
+                        'flex size-7 shrink-0 items-center justify-center rounded-md transition-colors',
+                        source.starred
+                          ? 'text-amber-600 hover:bg-amber-500/10'
+                          : 'text-muted-foreground opacity-0 group-hover:opacity-100 focus:opacity-100 hover:bg-accent hover:text-foreground',
+                      )}
+                      aria-label={source.starred ? `Unstar ${source.title}` : `Star ${source.title}`}
+                      aria-pressed={source.starred}
+                      title={source.starred ? 'Unstar source' : 'Star source'}
+                    >
+                      <Star className={cn('size-3.5', source.starred && 'fill-current')} />
+                    </button>
                     <button
                       type="button"
                       disabled={busySource === source.path}
@@ -821,7 +872,7 @@ function NotebookDetail({
           onSave={async (title) => {
             setBusySource(editedSource.path)
             try {
-              const updated = await actions.updateNotebookSource(notebook.path, editedSource.path, title)
+              const updated = await actions.updateNotebookSource(notebook.path, editedSource.path, { title })
               setNotebook(updated)
               setSourceEditPath(null)
             } finally {

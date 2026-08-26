@@ -36,6 +36,7 @@ const RETRIEVAL_PROFILES: Record<NotebookRetrievalProfile, {
 const NotebookSourceSchema = z.object({
     path: z.string().min(1),
     title: z.string().min(1),
+    starred: z.boolean().default(false),
     enabled: z.boolean(),
     contextMode: z.enum(['off', 'overview', 'full']).optional(),
     addedAt: z.string().min(1),
@@ -51,6 +52,7 @@ const NotebookSourceSchema = z.object({
 const NotebookManifestSchema = z.object({
     version: z.literal(1),
     title: z.string().min(1),
+    starred: z.boolean().default(false),
     description: z.string().max(2_000).default(''),
     retrievalProfile: NotebookRetrievalProfileSchema.default('balanced'),
     createdAt: z.string().min(1),
@@ -199,6 +201,7 @@ export async function createNotebook(titleInput: string): Promise<NotebookDescri
     const manifest: NotebookManifest = {
         version: 1,
         title,
+        starred: false,
         description: '',
         retrievalProfile: 'balanced',
         createdAt: timestamp,
@@ -252,6 +255,7 @@ export async function importNotebookSources(
         .map((item) => ({
             path: item.path,
             title: item.title,
+            starred: false,
             enabled: true,
             contextMode: 'full' as const,
             addedAt: timestamp,
@@ -270,7 +274,7 @@ export async function importNotebookSources(
 
 export async function updateNotebook(
     notebookPathInput: string,
-    input: { title?: string; description?: string; retrievalProfile?: NotebookRetrievalProfile },
+    input: { title?: string; starred?: boolean; description?: string; retrievalProfile?: NotebookRetrievalProfile },
 ): Promise<NotebookDescriptor> {
     const notebookPath = assertNotebookPath(notebookPathInput);
     const notebook = await getNotebook(notebookPath);
@@ -278,6 +282,7 @@ export async function updateNotebook(
     await persistNotebook(notebookPath, {
         ...notebook,
         title: input.title === undefined ? notebook.title : cleanNotebookTitle(input.title),
+        starred: input.starred ?? notebook.starred,
         description: input.description === undefined
             ? notebook.description
             : cleanNotebookDescription(input.description),
@@ -298,7 +303,7 @@ export async function deleteNotebook(notebookPathInput: string): Promise<{ ok: t
 export async function updateNotebookSource(
     notebookPathInput: string,
     sourcePathInput: string,
-    input: { title: string },
+    input: { title?: string; starred?: boolean },
 ): Promise<NotebookDescriptor> {
     const notebookPath = assertNotebookPath(notebookPathInput);
     const sourcePath = normalizePath(sourcePathInput);
@@ -307,7 +312,11 @@ export async function updateNotebookSource(
         throw new Error('That source does not belong to this notebook.');
     }
     const sources = notebook.sources.map((source) => source.path === sourcePath
-        ? { ...source, title: cleanSourceTitle(input.title) }
+        ? {
+            ...source,
+            title: input.title === undefined ? source.title : cleanSourceTitle(input.title),
+            starred: input.starred ?? source.starred,
+        }
         : source);
     const updatedAt = new Date().toISOString();
     await persistNotebook(notebookPath, { ...notebook, sources, updatedAt });

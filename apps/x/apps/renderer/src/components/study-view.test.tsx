@@ -28,13 +28,14 @@ function workspace(path: string, title: string, fact: string) {
       path,
       version: 1 as const,
       title,
+      starred: false,
       description: '',
       retrievalProfile: 'balanced' as const,
       createdAt: '2026-08-26T12:00:00.000Z',
       updatedAt: '2026-08-26T12:00:00.000Z',
-      sources: [{ path: sourcePath, title: `${title} source`, enabled: true, contextMode: 'full' as const, addedAt: '2026-08-26T12:00:00.000Z', available: true, modifiedAt: 1 }],
+      sources: [{ path: sourcePath, title: `${title} source`, starred: false, enabled: true, contextMode: 'full' as const, addedAt: '2026-08-26T12:00:00.000Z', available: true, modifiedAt: 1 }],
     },
-    studySet: { id: 'default', title: `${title} study set`, description: '', sourcePaths: [sourcePath], activityConfig: { flashcardCount: 20, quizQuestionCount: 10, quizTypes: ['multiple-choice' as const], difficulty: 'adaptive' as const, topics: [], includeExplanations: true }, createdAt: '2026-08-26T12:00:00.000Z', updatedAt: '2026-08-26T12:00:00.000Z' },
+    studySet: { id: 'default', title: `${title} study set`, starred: false, description: '', sourcePaths: [sourcePath], activityConfig: { flashcardCount: 20, quizQuestionCount: 10, quizTypes: ['multiple-choice' as const], difficulty: 'adaptive' as const, topics: [], includeExplanations: true }, createdAt: '2026-08-26T12:00:00.000Z', updatedAt: '2026-08-26T12:00:00.000Z' },
     settings: { examDate: null, dailyGoalMinutes: 25, sessionMinutes: 25 },
     cards: [{ id: `${title}-card`, front: `Recall ${title}`, back: fact, sourceId: 'S1', sourcePath, sourceTitle: `${title} source` }],
     quiz: [],
@@ -49,9 +50,12 @@ function workspace(path: string, title: string, fact: string) {
 
 const actions = {
   createNotebook: vi.fn(async (title: string) => `knowledge/Brain/Notebooks/${title}`),
+  getNotebook: vi.fn(async (path: string) => workspace(path, path === NOTEBOOK_B ? 'Community Health' : 'Cardiac Review', '').notebook),
   importNotes: vi.fn(async () => [] as string[]),
-  updateNotebook: vi.fn(),
+  updateNotebook: vi.fn(async (path: string, input: Record<string, unknown>) => ({ ...workspace(path, path === NOTEBOOK_B ? 'Community Health' : 'Cardiac Review', '').notebook, ...input })),
   deleteNotebook: vi.fn(async () => undefined),
+  updateNotebookSource: vi.fn(async (path: string, sourcePath: string, input: Record<string, unknown>) => ({ ...workspace(path, 'Cardiac Review', '').notebook, sources: workspace(path, 'Cardiac Review', '').notebook.sources.map((source) => source.path === sourcePath ? { ...source, ...input } : source) })),
+  removeNotebookSource: vi.fn(async (path: string) => ({ ...workspace(path, 'Cardiac Review', '').notebook, sources: [] })),
   startStudyChat: vi.fn(),
   startStudyVoice: vi.fn(),
 }
@@ -68,8 +72,34 @@ describe('StudyView', () => {
     render(<StudyView tree={tree} notebookPath={null} actions={actions} onOpenNotebook={onOpenNotebook} onOpenNotebookStudio={vi.fn()} onOpenNote={vi.fn()} onOpenSearch={vi.fn()} />)
 
     expect(screen.getByRole('heading', { name: 'Study' })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /Cardiac Review/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Cardiac Review/ }))
     expect(onOpenNotebook).toHaveBeenCalledWith(NOTEBOOK_A)
+  })
+
+  it('exposes durable star, edit, and delete controls for notebooks, study sets, and uploaded sources', async () => {
+    const invoke = vi.fn(async (channel: string, args: { path: string; studySetId?: string; starred?: boolean }) => {
+      if (channel === 'knowledge:study:listSets') return [workspace(args.path, 'Cardiac Review', '').studySet]
+      if (channel === 'knowledge:study:updateSet') return { ...workspace(args.path, 'Cardiac Review', '').studySet, starred: args.starred ?? false }
+      if (channel === 'knowledge:study:deleteSet') return { ok: true, recoveryPath: `${args.path}/.trash/study-set.json` }
+      throw new Error(`Unexpected channel ${channel}`)
+    })
+    ;(window as unknown as { ipc: unknown }).ipc = { invoke }
+    render(<StudyView tree={tree} notebookPath={NOTEBOOK_A} actions={actions} onOpenNotebook={vi.fn()} onOpenNotebookStudio={vi.fn()} onOpenNote={vi.fn()} onOpenSearch={vi.fn()} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Star notebook' }))
+    expect(actions.updateNotebook).toHaveBeenCalledWith(NOTEBOOK_A, { starred: true })
+    expect(screen.getByRole('button', { name: 'Edit and save notebook' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Delete notebook' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Star Cardiac Review study set' }))
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('knowledge:study:updateSet', expect.objectContaining({ path: NOTEBOOK_A, studySetId: 'default', starred: true })))
+    expect(screen.getByRole('button', { name: 'Edit Cardiac Review study set' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Delete Cardiac Review study set' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Star Cardiac Review source' }))
+    expect(actions.updateNotebookSource).toHaveBeenCalledWith(NOTEBOOK_A, `${NOTEBOOK_A}/Sources/source.md`, { starred: true })
+    expect(screen.getByRole('button', { name: 'Edit Cardiac Review source' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Delete Cardiac Review source' })).toBeInTheDocument()
   })
 
   it('starts grounded chat and voice from the active study set', async () => {
@@ -82,7 +112,7 @@ describe('StudyView', () => {
     }
     render(<StudyView tree={tree} notebookPath={NOTEBOOK_A} actions={actions} onOpenNotebook={vi.fn()} onOpenNotebookStudio={vi.fn()} onOpenNote={vi.fn()} onOpenSearch={vi.fn()} />)
 
-    fireEvent.click(await screen.findByRole('button', { name: /Cardiac Review study set/ }))
+    fireEvent.click((await screen.findAllByRole('button', { name: /Cardiac Review study set/ })).find((button) => !button.hasAttribute('aria-label'))!)
     fireEvent.click(await screen.findByRole('button', { name: 'Tutor in chat' }))
     fireEvent.click(screen.getByRole('button', { name: 'Start voice tutor' }))
 
@@ -98,7 +128,7 @@ describe('StudyView', () => {
     const onOpenNote = vi.fn()
     render(<StudyView tree={tree} notebookPath={NOTEBOOK_A} actions={actions} onOpenNotebook={vi.fn()} onOpenNotebookStudio={vi.fn()} onOpenNote={onOpenNote} onOpenSearch={vi.fn()} />)
 
-    fireEvent.click(await screen.findByRole('button', { name: /Cardiac Review study set/ }))
+    fireEvent.click((await screen.findAllByRole('button', { name: /Cardiac Review study set/ })).find((button) => !button.hasAttribute('aria-label'))!)
     expect(await screen.findByText('Notebook Studio connected')).toBeInTheDocument()
     for (const tool of ['Source summary', 'Study guide', 'FAQ', 'Timeline', 'Compare sources', 'Quiz me']) {
       expect(screen.getByRole('button', { name: new RegExp(`^${tool}\\b`, 'i') })).toBeInTheDocument()

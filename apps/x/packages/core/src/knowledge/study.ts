@@ -25,6 +25,7 @@ export const StudyActivityConfigSchema = z.object({
 export const StudySetSchema = z.object({
     id: z.string().min(1).max(100),
     title: z.string().min(1).max(160),
+    starred: z.boolean().default(false),
     description: z.string().max(2_000).default(''),
     sourcePaths: z.array(z.string().min(1)).default([]),
     activityConfig: StudyActivityConfigSchema.default({
@@ -175,7 +176,7 @@ export async function listStudySets(notebookPath: string): Promise<StudySet[]> {
     return (await loadRegistry(notebookPath)).sets;
 }
 
-type StudySetMutation = Partial<Pick<StudySet, 'title' | 'description' | 'sourcePaths'>> & { activityConfig?: Partial<StudySet['activityConfig']> };
+type StudySetMutation = Partial<Pick<StudySet, 'title' | 'starred' | 'description' | 'sourcePaths'>> & { activityConfig?: Partial<StudySet['activityConfig']> };
 
 export async function createStudySet(notebookPath: string, input: Pick<StudySet, 'title'> & StudySetMutation): Promise<StudySet> {
     return withStudyLock(notebookPath, async () => {
@@ -184,6 +185,7 @@ export async function createStudySet(notebookPath: string, input: Pick<StudySet,
         const now = new Date().toISOString();
         const studySet = StudySetSchema.parse({
             id: randomUUID(), title: input.title, description: input.description ?? '',
+            starred: input.starred ?? false,
             sourcePaths: (input.sourcePaths ?? notebook.sources.map((source) => source.path)).filter((path) => allowed.has(path)),
             activityConfig: input.activityConfig, createdAt: now, updatedAt: now,
         });
@@ -202,6 +204,23 @@ export async function updateStudySet(notebookPath: string, studySetId: string, i
         await saveRegistry(notebookPath, registry.sets.map((set) => set.id === studySetId ? updated : set));
         workspaceCache.delete(`${notebookPath}::${studySetId}`);
         return updated;
+    });
+}
+
+export async function removeSourceFromStudySets(notebookPath: string, sourcePath: string): Promise<void> {
+    await withStudyLock(notebookPath, async () => {
+        const registry = await loadRegistry(notebookPath);
+        const nextSets = registry.sets.map((studySet) => studySet.sourcePaths.includes(sourcePath)
+            ? StudySetSchema.parse({
+                ...studySet,
+                sourcePaths: studySet.sourcePaths.filter((path) => path !== sourcePath),
+                updatedAt: new Date().toISOString(),
+            })
+            : studySet);
+        if (nextSets.some((studySet, index) => studySet !== registry.sets[index])) {
+            await saveRegistry(notebookPath, nextSets);
+            for (const studySet of nextSets) workspaceCache.delete(`${notebookPath}::${studySet.id}`);
+        }
     });
 }
 
